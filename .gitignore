@@ -1,0 +1,26 @@
+# OS / editor
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Env & secrets
+.env
+.env.*
+
+# Logs
+*.log
+logs/
+
+# Dependencies & build
+**/node_modules/
+frontend/dist/
+
+# Editor
+.vscode/

@@ -1,0 +1,1792 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SQL 优化 Agent</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.css">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/theme/eclipse.min.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/sql/sql.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/marked/9.1.6/marked.min.js"></script>
+<style>
+:root {
+  --bg: #f0f2f5;
+  --bg2: #ffffff;
+  --bg3: #f5f7fa;
+  --border: #e4e7ed;
+  --accent: #1890ff;
+  --accent2: #52c41a;
+  --text: #303133;
+  --text2: #909399;
+  --text3: #b0b3b8;
+  --danger: #ff4d4f;
+  --warn: #faad14;
+  --radius: 10px;
+  --font-mono: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* ── Header ── */
+header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 20px;
+  height: 52px;
+  background: var(--bg2);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.logo { display: flex; align-items: center; gap: 10px; font-size: 15px; font-weight: 600; }
+.logo-icon {
+  width: 28px; height: 28px; border-radius: 8px;
+  background: linear-gradient(135deg, var(--accent), #a78bfa);
+  display: flex; align-items: center; justify-content: center; font-size: 14px;
+}
+.header-right { display: flex; align-items: center; gap: 10px; }
+.model-badge {
+  font-size: 11px; padding: 3px 10px;
+  background: rgba(24,144,255,0.1); color: var(--accent);
+  border: 1px solid rgba(24,144,255,0.25); border-radius: 20px;
+}
+.status-dot {
+  width: 8px; height: 8px; border-radius: 50%;
+  background: var(--text3); transition: background 0.3s;
+}
+.status-dot.ok { background: var(--accent2); box-shadow: 0 0 6px rgba(82,196,26,0.4); }
+.status-dot.err { background: var(--danger); }
+
+/* ── Main Layout ── */
+main {
+  flex: 1;
+  display: grid;
+  grid-template-columns: 340px 1fr;
+  overflow: hidden;
+}
+
+/* ── Left Panel ── */
+.left-panel {
+  background: var(--bg2);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.panel-tabs {
+  display: flex;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.tab-btn {
+  flex: 1; padding: 10px; font-size: 12px; font-weight: 500;
+  background: none; border: none; color: var(--text3);
+  cursor: pointer; transition: all 0.2s;
+  border-bottom: 2px solid transparent;
+}
+.tab-btn.active { color: var(--accent); border-bottom-color: var(--accent); background: rgba(24,144,255,0.05); }
+.tab-content { display: none; flex: 1; overflow-y: auto; padding: 16px; flex-direction: column; gap: 12px; }
+.tab-content.active { display: flex; }
+
+/* ── Form elements ── */
+.field { display: flex; flex-direction: column; gap: 5px; }
+label { font-size: 11px; color: var(--text3); text-transform: uppercase; letter-spacing: 0.05em; }
+select, input {
+  background: var(--bg3); border: 1px solid var(--border);
+  color: var(--text); border-radius: 7px; padding: 8px 10px;
+  font-size: 13px; transition: border 0.2s; font-family: inherit;
+}
+select:focus, input:focus { outline: none; border-color: var(--accent); }
+.row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.conn-status {
+  font-size: 12px; padding: 8px 12px; border-radius: 7px;
+  background: var(--bg3); border: 1px solid var(--border);
+  transition: all 0.3s;
+}
+.conn-status.ok { border-color: rgba(82,196,26,0.4); color: var(--accent2); background: rgba(82,196,26,0.06); }
+.conn-status.err { border-color: rgba(255,77,79,0.4); color: var(--danger); background: rgba(255,77,79,0.06); }
+
+/* ── Buttons ── */
+.btn {
+  padding: 9px 16px; border-radius: 7px; border: none;
+  font-size: 13px; font-weight: 500; cursor: pointer;
+  transition: all 0.2s; display: flex; align-items: center; gap: 6px;
+}
+.btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.btn-primary { background: var(--accent); color: #fff; }
+.btn-primary:hover:not(:disabled) { background: #40a9ff; }
+.btn-outline {
+  background: var(--bg2); color: var(--text2);
+  border: 1px solid var(--border);
+}
+.btn-outline:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+.btn-danger { background: transparent; color: var(--danger); border: 1px solid rgba(255,77,79,0.3); }
+.btn-danger:hover:not(:disabled) { background: rgba(255,77,79,0.08); }
+.btn-sm { padding: 6px 12px; font-size: 12px; }
+
+/* ── SQL Editor area ── */
+.editor-area { display: flex; flex-direction: column; gap: 8px; flex: 1; }
+.editor-toolbar {
+  display: flex; gap: 6px; flex-wrap: wrap;
+}
+.CodeMirror {
+  font-family: var(--font-mono) !important;
+  font-size: 13px !important;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  height: 220px;
+  background: var(--bg2);
+}
+.CodeMirror-focused { border-color: var(--accent) !important; }
+.quick-question {
+  background: var(--bg3); border: 1px solid var(--border);
+  color: var(--text); border-radius: 7px; padding: 8px 10px;
+  font-size: 13px; font-family: inherit; resize: none;
+  min-height: 60px;
+}
+.quick-question:focus { outline: none; border-color: var(--accent); }
+
+/* ── Schema display ── */
+.schema-display {
+  background: var(--bg3); border: 1px solid var(--border);
+  border-radius: 8px; padding: 12px; font-size: 11px;
+  font-family: var(--font-mono); color: var(--text2);
+  max-height: 200px; overflow-y: auto; white-space: pre-wrap;
+  line-height: 1.6;
+}
+
+/* ── Right Panel (Chat) ── */
+.right-panel {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--bg);
+}
+.chat-header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 12px 20px; border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.chat-header-title { font-size: 13px; font-weight: 500; color: var(--text2); }
+.chat-messages {
+  flex: 1; overflow-y: auto; padding: 20px;
+  display: flex; flex-direction: column; gap: 16px;
+}
+.chat-messages::-webkit-scrollbar { width: 4px; }
+.chat-messages::-webkit-scrollbar-track { background: transparent; }
+.chat-messages::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+
+/* ── Messages ── */
+.msg {
+  display: flex; gap: 12px; animation: fadeIn 0.2s ease;
+}
+@keyframes fadeIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+.msg.user { flex-direction: row-reverse; }
+.msg-avatar {
+  width: 32px; height: 32px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 14px; flex-shrink: 0;
+}
+.msg.user .msg-avatar { background: rgba(24,144,255,0.1); }
+.msg.assistant .msg-avatar { background: rgba(82,196,26,0.1); }
+.msg-body { max-width: 85%; }
+.msg-name {
+  font-size: 11px; color: var(--text3); margin-bottom: 5px;
+}
+.msg.user .msg-name { text-align: right; }
+.msg-bubble {
+  padding: 12px 16px; border-radius: 12px;
+  font-size: 14px; line-height: 1.7;
+}
+.msg.user .msg-bubble {
+  background: rgba(24,144,255,0.08); border: 1px solid rgba(24,144,255,0.15);
+  border-top-right-radius: 4px;
+}
+.msg.assistant .msg-bubble {
+  background: var(--bg2); border: 1px solid var(--border);
+  border-top-left-radius: 4px;
+}
+/* Markdown styles inside bubbles */
+.msg-bubble h1,.msg-bubble h2,.msg-bubble h3 {
+  margin: 12px 0 6px; font-size: 14px; font-weight: 600;
+}
+.msg-bubble h2 { color: var(--accent); font-size: 13px; }
+.msg-bubble p { margin: 6px 0; }
+.msg-bubble code {
+  font-family: var(--font-mono); font-size: 12px;
+  background: rgba(0,0,0,0.06); padding: 1px 5px; border-radius: 4px;
+  color: #16a34a;
+}
+.msg-bubble pre {
+  margin: 10px 0; border-radius: 8px;
+  background: #f5f7fa; border: 1px solid var(--border);
+  overflow-x: auto; position: relative;
+}
+.msg-bubble pre code {
+  display: block; padding: 12px 14px;
+  background: transparent; color: #303133;
+  font-size: 12px; line-height: 1.6;
+}
+.copy-btn {
+  position: absolute; top: 6px; right: 6px;
+  font-size: 10px; padding: 3px 8px; border-radius: 4px;
+  background: var(--bg3); border: 1px solid var(--border);
+  color: var(--text3); cursor: pointer;
+}
+.copy-btn:hover { color: var(--text); border-color: var(--accent); }
+.msg-bubble ul, .msg-bubble ol { padding-left: 20px; margin: 6px 0; }
+.msg-bubble li { margin: 3px 0; }
+.msg-bubble strong { color: #303133; }
+.msg-bubble hr { border: none; border-top: 1px solid var(--border); margin: 10px 0; }
+
+/* Typing cursor */
+.typing-cursor::after {
+  content: '▋'; animation: blink 1s infinite;
+  color: var(--accent);
+}
+@keyframes blink { 0%,100% { opacity: 1; } 50% { opacity: 0; } }
+
+/* ── Chat Input ── */
+.chat-input-area {
+  padding: 16px 20px;
+  border-top: 1px solid var(--border);
+  display: flex; flex-direction: column; gap: 10px;
+  flex-shrink: 0; background: var(--bg2);
+}
+.chat-input-row { display: flex; gap: 10px; align-items: flex-end; }
+.chat-input {
+  flex: 1; background: var(--bg3); border: 1px solid var(--border);
+  color: var(--text); border-radius: 10px; padding: 10px 14px;
+  font-size: 13px; font-family: inherit; resize: none; max-height: 120px;
+  line-height: 1.5; transition: border 0.2s;
+}
+.chat-input:focus { outline: none; border-color: var(--accent); }
+.send-btn {
+  width: 40px; height: 40px; border-radius: 10px;
+  background: var(--accent); border: none; cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 16px; transition: all 0.2s; flex-shrink: 0;
+}
+.send-btn:hover:not(:disabled) { background: #40a9ff; transform: scale(1.05); }
+.send-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+/* ── Empty state ── */
+.empty-state {
+  flex: 1; display: flex; flex-direction: column;
+  align-items: center; justify-content: center; gap: 12px;
+  color: var(--text3);
+}
+.empty-icon { font-size: 48px; opacity: 0.4; }
+.empty-state p { font-size: 14px; text-align: center; line-height: 1.6; }
+.hint-chips { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; margin-top: 8px; }
+.hint-chip {
+  font-size: 12px; padding: 5px 12px;
+  background: var(--bg3); border: 1px solid var(--border);
+  border-radius: 20px; cursor: pointer; color: var(--text2);
+  transition: all 0.2s;
+}
+.hint-chip:hover { border-color: var(--accent); color: var(--accent); }
+
+/* ── EXPLAIN panel ── */
+.explain-result {
+  font-family: var(--font-mono); font-size: 11px;
+  color: var(--text2); line-height: 1.8; white-space: pre-wrap;
+  word-break: break-all;
+}
+
+/* ── Scrollbar global ── */
+::-webkit-scrollbar { width: 5px; height: 5px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+
+/* ── Toast ── */
+.toast {
+  position: fixed; bottom: 24px; right: 24px;
+  padding: 10px 16px; border-radius: 8px; font-size: 13px;
+  animation: slideIn 0.3s ease; z-index: 999;
+}
+.toast.ok { background: rgba(82,196,26,0.1); border: 1px solid rgba(82,196,26,0.25); color: var(--accent2); }
+.toast.err { background: rgba(255,77,79,0.1); border: 1px solid rgba(255,77,79,0.25); color: var(--danger); }
+@keyframes slideIn { from { opacity:0; transform: translateY(10px); } to { opacity:1; transform:none; } }
+
+/* ── Loading spinner ── */
+.spinner {
+  width: 14px; height: 14px; border: 2px solid rgba(255,255,255,0.3);
+  border-top-color: #fff; border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* ── Analysis Cards (Rule Engine / EXPLAIN) ── */
+.analysis-card {
+  margin-top: 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--bg3);
+}
+.analysis-card.collapsed .analysis-card-body { display: none; }
+.analysis-card.collapsed .analysis-card-toggle { transform: rotate(-90deg); }
+.analysis-card-header {
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 12px; cursor: pointer; user-select: none;
+  background: var(--bg2); border-bottom: 1px solid var(--border);
+  font-size: 13px;
+}
+.analysis-card-header:hover { background: var(--bg3); }
+.analysis-card-icon { font-size: 14px; }
+.analysis-card-title { font-weight: 600; color: var(--text); }
+.analysis-card-count {
+  margin-left: auto; font-size: 11px; color: var(--text2);
+  background: var(--bg); padding: 1px 8px; border-radius: 10px;
+}
+.analysis-card-toggle {
+  font-size: 10px; color: var(--text3); transition: transform 0.2s;
+}
+.analysis-card-body { padding: 8px 12px; }
+
+.rule-item {
+  display: flex; gap: 8px; align-items: flex-start;
+  padding: 6px 0; border-bottom: 1px solid var(--border);
+}
+.rule-item:last-child { border-bottom: none; }
+.rule-badge {
+  flex-shrink: 0; font-size: 10px; font-weight: 600;
+  color: #fff; padding: 1px 6px; border-radius: 3px;
+  margin-top: 2px;
+}
+.rule-content { flex: 1; min-width: 0; }
+.rule-title { font-size: 13px; font-weight: 600; color: var(--text); }
+.rule-detail { font-size: 12px; color: var(--text2); margin-top: 2px; }
+.rule-suggestion {
+  font-size: 12px; color: var(--accent); margin-top: 3px;
+  white-space: pre-wrap; line-height: 1.5;
+}
+
+.explain-summary {
+  font-size: 12px; color: var(--text2); padding: 4px 0 8px;
+  border-bottom: 1px solid var(--border); margin-bottom: 4px;
+}
+
+/* ── Validation Badges ── */
+.validation-badges {
+  display: flex; flex-wrap: wrap; gap: 6px;
+  margin-top: 8px;
+}
+.v-badge {
+  font-size: 11px; padding: 2px 8px; border-radius: 4px;
+  border: 1px solid;
+}
+.v-ok { background: rgba(82,196,26,0.08); border-color: rgba(82,196,26,0.25); color: var(--accent2); }
+.v-err { background: rgba(255,77,79,0.08); border-color: rgba(255,77,79,0.25); color: var(--danger); }
+.v-warn { background: rgba(250,173,20,0.08); border-color: rgba(250,173,20,0.25); color: var(--warn); }
+
+/* ── LLM Config ── */
+.llm-section {
+  margin-top: 8px; padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+.llm-section-title {
+  font-size: 12px; font-weight: 600; color: var(--text2);
+  margin-bottom: 10px; display: flex; align-items: center; gap: 6px;
+}
+.llm-test-btn { font-size: 11px; }
+
+/* ── Opt Action Bar ── */
+.opt-actions {
+  display: flex; flex-wrap: wrap; gap: 6px;
+  margin-top: 10px; padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+.opt-action-btn {
+  font-size: 11px; padding: 4px 12px; border-radius: 5px;
+  border: 1px solid var(--border); background: var(--bg2);
+  color: var(--text2); cursor: pointer; transition: all 0.2s;
+}
+.opt-action-btn:hover { border-color: var(--accent); color: var(--accent); }
+.opt-action-btn.adopted { background: rgba(82,196,26,0.1); border-color: rgba(82,196,26,0.3); color: var(--accent2); }
+.opt-action-btn.rejected { background: rgba(255,77,79,0.1); border-color: rgba(255,77,79,0.3); color: var(--danger); }
+.opt-action-btn.executed { background: rgba(24,144,255,0.1); border-color: rgba(24,144,255,0.3); color: var(--accent); }
+.opt-action-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* ── History Tab ── */
+.history-table { width: 100%; font-size: 11px; border-collapse: collapse; }
+.history-table th {
+  text-align: left; padding: 6px 8px; font-weight: 600;
+  color: var(--text2); border-bottom: 1px solid var(--border);
+  font-size: 10px; text-transform: uppercase;
+}
+.history-table td {
+  padding: 6px 8px; border-bottom: 1px solid var(--border);
+  color: var(--text); max-width: 200px; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap;
+}
+.history-table tr:hover td { background: var(--bg3); cursor: pointer; }
+.history-status {
+  font-size: 10px; padding: 1px 6px; border-radius: 3px;
+  font-weight: 600;
+}
+.history-status.PENDING { background: rgba(250,173,20,0.15); color: var(--warn); }
+.history-status.ADOPTED { background: rgba(82,196,26,0.15); color: var(--accent2); }
+.history-status.REJECTED { background: rgba(255,77,79,0.15); color: var(--danger); }
+.history-status.EXECUTED { background: rgba(24,144,255,0.15); color: var(--accent); }
+.history-empty { text-align: center; color: var(--text3); padding: 20px; font-size: 12px; }
+
+/* ── Effect Rating ── */
+.effect-stars { display: flex; gap: 4px; margin: 6px 0; }
+.effect-star {
+  font-size: 18px; cursor: pointer; color: var(--border);
+  transition: color 0.15s;
+}
+.effect-star.active { color: var(--warn); }
+.effect-star:hover { color: var(--warn); }
+
+/* ── Detail Modal ── */
+.modal-overlay {
+  position: fixed; inset: 0; background: rgba(0,0,0,0.4);
+  z-index: 1000; display: flex; align-items: center; justify-content: center;
+}
+.modal-box {
+  background: var(--bg2); border-radius: 12px; width: 90%; max-width: 800px;
+  max-height: 85vh; overflow-y: auto; padding: 20px;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.2);
+}
+.modal-title { font-size: 16px; font-weight: 600; margin-bottom: 12px; }
+.modal-close {
+  float: right; background: none; border: none; font-size: 20px;
+  color: var(--text3); cursor: pointer;
+}
+.modal-close:hover { color: var(--text); }
+.modal-section { margin-bottom: 12px; }
+.modal-section-title { font-size: 12px; font-weight: 600; color: var(--text2); margin-bottom: 6px; }
+.modal-sql {
+  font-family: var(--font-mono); font-size: 12px;
+  background: var(--bg3); border: 1px solid var(--border);
+  border-radius: 6px; padding: 10px; white-space: pre-wrap;
+  max-height: 200px; overflow-y: auto; line-height: 1.6;
+}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="logo">
+    <div class="logo-icon">⚡</div>
+    SQL 优化 Agent
+  </div>
+  <div class="header-right">
+    <span class="model-badge" id="modelBadge">deepseek-r1:1.5b</span>
+    <div style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text3)">
+      <div class="status-dot" id="ollamaStatus"></div>
+      <span id="ollamaStatusText">检查中...</span>
+    </div>
+  </div>
+</header>
+
+<main>
+  <!-- ── Left Panel ── -->
+  <div class="left-panel">
+    <div class="panel-tabs">
+      <button class="tab-btn active" onclick="switchTab('db')">数据库</button>
+      <button class="tab-btn" onclick="switchTab('sql')">SQL 编辑</button>
+      <button class="tab-btn" onclick="switchTab('schema')">表结构</button>
+      <button class="tab-btn" onclick="switchTab('history')">历史</button>
+    </div>
+
+    <!-- Tab: 数据库配置 -->
+    <div class="tab-content active" id="tab-db">
+      <div class="field">
+        <label>数据库类型</label>
+        <select id="dbType" onchange="onDbTypeChange()">
+          <option value="oracle">Oracle</option>
+          <option value="postgresql">PostgreSQL</option>
+          <option value="mysql">MySQL</option>
+        </select>
+      </div>
+      <div class="row2">
+        <div class="field">
+          <label>主机地址</label>
+          <input id="dbHost" placeholder="localhost" />
+        </div>
+        <div class="field">
+          <label>端口</label>
+          <input id="dbPort" placeholder="1521" />
+        </div>
+      </div>
+      <div class="field">
+        <label id="dbNameLabel">Service Name / SID</label>
+        <input id="dbDatabase" placeholder="ORCL" />
+      </div>
+      <div class="row2">
+        <div class="field">
+          <label>用户名</label>
+          <input id="dbUser" placeholder="username" />
+        </div>
+        <div class="field">
+          <label>密码</label>
+          <input id="dbPass" type="password" placeholder="password" />
+        </div>
+      </div>
+      <div class="conn-status" id="connStatus">未连接</div>
+      <div style="display:flex;gap:8px">
+        <button class="btn btn-outline" style="flex:1" onclick="testConn()">
+          测试连接
+        </button>
+        <button class="btn btn-primary" style="flex:1" onclick="saveConn()">
+          保存配置
+        </button>
+      </div>
+      <div class="llm-section">
+        <div class="llm-section-title">🤖 LLM 配置</div>
+        <div class="field">
+          <label>LLM 提供商</label>
+          <select id="llmProvider" onchange="onProviderChange()">
+            <option value="ollama">Ollama（本地）</option>
+            <option value="openai">OpenAI 兼容（远程）</option>
+          </select>
+        </div>
+        <div class="field" id="openaiUrlField" style="display:none">
+          <label>API 地址</label>
+          <input id="openaiBaseUrl" placeholder="http://172.17.225.173:8103/v1" />
+        </div>
+        <div class="field" id="openaiKeyField" style="display:none">
+          <label>API Key</label>
+          <input id="openaiApiKey" type="password" placeholder="可选" />
+        </div>
+        <div class="field">
+          <label>模型</label>
+          <select id="modelSelect" onchange="updateModel()">
+            <option value="deepseek-r1:1.5b">deepseek-r1:1.5b</option>
+          </select>
+        </div>
+        <div style="display:flex;gap:8px">
+          <button class="btn btn-outline btn-sm llm-test-btn" style="flex:1" onclick="testLlmConn()">
+            测试 LLM
+          </button>
+          <button class="btn btn-outline btn-sm" style="flex:1" onclick="loadModels()">
+            刷新模型
+          </button>
+        </div>
+        <div class="conn-status" id="llmStatus" style="margin-top:6px">未测试</div>
+      </div>
+    </div>
+
+    <!-- Tab: SQL 编辑 -->
+    <div class="tab-content" id="tab-sql">
+      <div class="editor-area">
+        <div class="field">
+          <label>SQL 语句</label>
+          <div id="sqlEditor"></div>
+        </div>
+        <div class="field">
+          <label>问题描述（可选）</label>
+          <textarea class="quick-question" id="questionInput"
+            placeholder="例如：这条查询在 500 万行数据时需要 8 秒，请优化..."></textarea>
+        </div>
+        <div class="editor-toolbar">
+          <button class="btn btn-primary" onclick="startOptimize()" id="optimizeBtn">
+            <span>⚡</span> 开始优化
+          </button>
+          <button class="btn btn-outline btn-sm" onclick="runExplain()" id="explainBtn">
+            📊 EXPLAIN
+          </button>
+          <button class="btn btn-outline btn-sm" onclick="clearEditor()">
+            🗑 清空
+          </button>
+          <button class="btn btn-outline btn-sm" onclick="loadDemo()">
+            📋 示例
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Tab: 表结构 -->
+    <div class="tab-content" id="tab-schema">
+      <div style="display:flex;gap:6px;margin-bottom:4px">
+        <button class="btn btn-outline btn-sm" onclick="fetchSchema()" style="flex:1">
+          🔄 获取表结构
+        </button>
+      </div>
+      <div class="field">
+        <label>识别到的表</label>
+        <div id="tableList" style="font-size:12px;color:var(--text2);padding:6px 0;">
+          请先在 SQL 编辑页输入 SQL
+        </div>
+      </div>
+      <div class="field" style="flex:1">
+        <label>Schema 信息</label>
+        <div class="schema-display" id="schemaDisplay">暂无</div>
+      </div>
+      <div class="field">
+        <label>执行计划</label>
+        <div class="schema-display explain-result" id="explainDisplay">暂无</div>
+      </div>
+    </div>
+
+    <!-- Tab: 优化历史 -->
+    <div class="tab-content" id="tab-history">
+      <div style="display:flex;gap:6px;margin-bottom:8px">
+        <select id="historyStatusFilter" onchange="loadHistory()" style="flex:1;font-size:12px">
+          <option value="">全部状态</option>
+          <option value="PENDING">待处理</option>
+          <option value="ADOPTED">已采纳</option>
+          <option value="REJECTED">未采纳</option>
+          <option value="EXECUTED">已执行</option>
+        </select>
+        <button class="btn btn-outline btn-sm" onclick="loadHistory()">刷新</button>
+      </div>
+      <div id="historyContent">
+        <div class="history-empty">点击刷新加载优化历史</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Right Panel (Chat) ── -->
+  <div class="right-panel">
+    <div class="chat-header">
+      <span class="chat-header-title">💬 AI 优化建议 & 对话</span>
+      <div style="display:flex;gap:8px">
+        <button class="btn btn-outline btn-sm" onclick="clearChat()">清空对话</button>
+        <button class="btn btn-outline btn-sm" onclick="copyLastReply()">复制最后回复</button>
+      </div>
+    </div>
+
+    <div class="chat-messages" id="chatMessages">
+      <div class="empty-state" id="emptyState">
+        <div class="empty-icon">⚡</div>
+        <p>在左侧输入 SQL，点击「开始优化」<br>即可获得 AI 优化建议</p>
+        <div class="hint-chips">
+          <div class="hint-chip" onclick="loadDemo();switchTab('sql')">加载示例 SQL</div>
+          <div class="hint-chip" onclick="askQuick('如何分析慢查询？')">如何分析慢查询？</div>
+          <div class="hint-chip" onclick="askQuick('Oracle 和 PG 索引有什么区别？')">Oracle 和 PG 索引对比</div>
+          <div class="hint-chip" onclick="askQuick('什么情况下需要建复合索引？')">何时建复合索引？</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="chat-input-area">
+      <div style="font-size:11px;color:var(--text3)">
+        💡 优化完成后可继续追问：「如果数据量翻倍呢？」「能用 CTE 改写吗？」
+      </div>
+      <div class="chat-input-row">
+        <textarea class="chat-input" id="chatInput" rows="1"
+          placeholder="追问或输入新问题... (Ctrl+Enter 发送)"
+          onkeydown="onChatKeydown(event)"
+          oninput="autoResize(this)"></textarea>
+        <button class="send-btn" id="sendBtn" onclick="sendChat()">➤</button>
+      </div>
+    </div>
+  </div>
+</main>
+
+<script>
+// ── State ──────────────────────────────────────────────────
+let sessionId = null;
+let isStreaming = false;
+let editor = null;
+let currentModel = 'deepseek-r1:1.5b';
+let lastAssistantMsgEl = null;
+let dbConfig = {};
+
+/** 嵌入主站（路径以 /sql-agent 开头）时 API 需带此前缀，避免与主站 /api 冲突；独立 8000 端口时仍用根路径 */
+function sqlOptApiUrl(path) {
+  const p = path.startsWith('/') ? path : '/' + path;
+  if (typeof location !== 'undefined' && (
+    location.pathname.startsWith('/sql-agent') || location.pathname.startsWith('/api/sql-agent')
+  )) {
+    return '/api/sql-agent' + p;
+  }
+  return p;
+}
+
+// ── Init ───────────────────────────────────────────────────
+document.addEventListener('DOMContentLoaded', () => {
+  initEditor();
+  applyPresetSqlFromUrl();
+  checkOllama();
+  loadModels();
+  loadSavedConfig();
+  setInterval(checkOllama, 30000);
+});
+
+/** 从平台 /sql 内嵌 iframe 传入 ?presetSql= 时预填编辑器 */
+function applyPresetSqlFromUrl() {
+  try {
+    const preset = new URLSearchParams(window.location.search).get('presetSql');
+    if (preset != null && preset !== '' && editor) {
+      editor.setValue(preset);
+    }
+  } catch (_) {}
+}
+
+function initEditor() {
+  editor = CodeMirror(document.getElementById('sqlEditor'), {
+    mode: 'text/x-sql',
+    theme: 'eclipse',
+    lineNumbers: true,
+    autofocus: false,
+    tabSize: 2,
+    indentWithTabs: false,
+    lineWrapping: true,
+    extraKeys: {
+      'Ctrl-Enter': startOptimize,
+      'Cmd-Enter': startOptimize,
+    }
+  });
+}
+
+// ── Ollama 状态检查 ────────────────────────────────────────
+async function checkOllama() {
+  const dot = document.getElementById('ollamaStatus');
+  const txt = document.getElementById('ollamaStatusText');
+  const provider = document.getElementById('llmProvider')?.value || 'ollama';
+  try {
+    const r = await fetch(sqlOptApiUrl('/api/models') + '?provider=' + encodeURIComponent(provider));
+    const d = await r.json();
+    if (d.ok) {
+      dot.className = 'status-dot ok';
+      txt.textContent = (d.provider || provider) + ' 在线';
+    } else {
+      dot.className = 'status-dot err';
+      txt.textContent = (d.provider || provider) + ' 离线';
+    }
+  } catch {
+    dot.className = 'status-dot err';
+    txt.textContent = provider + ' 离线';
+  }
+}
+
+async function loadModels() {
+  try {
+    const r = await fetch(sqlOptApiUrl('/api/models'));
+    const d = await r.json();
+    if (d.ok && d.models.length) {
+      const sel = document.getElementById('modelSelect');
+      sel.innerHTML = d.models.map(m =>
+        `<option value="${m}" ${m === currentModel ? 'selected' : ''}>${m}</option>`
+      ).join('');
+    }
+  } catch {}
+}
+
+function updateModel() {
+  currentModel = document.getElementById('modelSelect').value;
+  document.getElementById('modelBadge').textContent = currentModel;
+}
+
+// ── DB Config ──────────────────────────────────────────────
+function onDbTypeChange() {
+  const type = document.getElementById('dbType').value;
+  const portMap = { oracle: '1521', postgresql: '5432', mysql: '3306' };
+  const nameMap = { oracle: 'Service Name / SID', postgresql: '数据库名', mysql: '数据库名' };
+  const placeholderMap = { oracle: 'ORCL', postgresql: 'postgres', mysql: 'mydb' };
+  document.getElementById('dbPort').value = portMap[type];
+  document.getElementById('dbNameLabel').textContent = nameMap[type];
+  document.getElementById('dbDatabase').placeholder = placeholderMap[type];
+}
+
+function getDbConfig() {
+  return {
+    type: document.getElementById('dbType').value,
+    host: document.getElementById('dbHost').value.trim(),
+    port: document.getElementById('dbPort').value.trim(),
+    database: document.getElementById('dbDatabase').value.trim(),
+    username: document.getElementById('dbUser').value.trim(),
+    password: document.getElementById('dbPass').value,
+  };
+}
+
+async function testConn() {
+  const config = getDbConfig();
+  const el = document.getElementById('connStatus');
+  el.textContent = '连接中...';
+  el.className = 'conn-status';
+  try {
+    const r = await fetch(sqlOptApiUrl('/api/connect'), {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify(config)
+    });
+    const d = await r.json();
+    if (d.ok) {
+      el.textContent = '✅ ' + d.message;
+      el.className = 'conn-status ok';
+      dbConfig = config;
+    } else {
+      el.textContent = '❌ ' + d.message;
+      el.className = 'conn-status err';
+    }
+  } catch(e) {
+    el.textContent = '❌ 请求失败: ' + e.message;
+    el.className = 'conn-status err';
+  }
+}
+
+function saveConn() {
+  dbConfig = getDbConfig();
+  localStorage.setItem('sqlopt_config', JSON.stringify(dbConfig));
+  showToast('配置已保存', 'ok');
+}
+
+function loadSavedConfig() {
+  const saved = localStorage.getItem('sqlopt_config');
+  if (!saved) return;
+  try {
+    const c = JSON.parse(saved);
+    dbConfig = c;
+    const setVal = (id, v) => { if(document.getElementById(id)) document.getElementById(id).value = v || ''; };
+    setVal('dbType', c.type);
+    setVal('dbHost', c.host);
+    setVal('dbPort', c.port);
+    setVal('dbDatabase', c.database);
+    setVal('dbUser', c.username);
+    onDbTypeChange();
+  } catch {}
+}
+
+// ── SQL 编辑区：是否为 SQL / 是否为闲聊算术（与后端 prompt_builder 一致） ──
+function stripSqlComments(s) {
+  let t = String(s || '');
+  t = t.replace(/\/\*[\s\S]*?\*\//g, ' ');
+  t = t.replace(/--[^\n]*/g, ' ');
+  return t.trim();
+}
+
+function isLikelySqlStatement(raw) {
+  let t = stripSqlComments(raw).trim();
+  if (!t) return false;
+  while (t.startsWith('(')) t = t.slice(1).trim();
+  const m = t.match(/^[\s(]*([A-Za-z_]+)/);
+  if (!m) return false;
+  const first = m[1].toUpperCase();
+  const sqlStarts = new Set([
+    'WITH', 'SELECT', 'INSERT', 'UPDATE', 'DELETE', 'MERGE', 'EXPLAIN', 'CREATE', 'ALTER', 'DROP',
+    'TRUNCATE', 'CALL', 'DECLARE', 'BEGIN', 'SHOW', 'DESC', 'DESCRIBE', 'GRANT', 'REVOKE', 'COMMIT',
+    'ROLLBACK', 'SAVEPOINT', 'ANALYZE', 'COMMENT', 'USE', 'REPLACE', 'LOCK', 'RENAME', 'EXEC', 'EXECUTE'
+  ]);
+  return sqlStarts.has(first);
+}
+
+function isGeneralChatMessage(text) {
+  const s = (text || '').trim();
+  if (!s) return false;
+  if (s.length <= 48 && /^[\d\s\+\-\*/\(\)\=\.×÷，,。!?？！:：]+$/.test(s)) return true;
+  if (/(等于几|多少|一加一|算术|计算题)/.test(s) && !isLikelySqlStatement(s)) return true;
+  if (/^(你好|谢谢|在吗|请问|hi|hello|ok|好的)\s*[!！?？。]*$/i.test(s)) return true;
+  if (s.length <= 24 && /^[\d\s\+\-\*/\(\)\=\.]+$/.test(s)) return true;
+  return false;
+}
+
+// ── SQL Actions ────────────────────────────────────────────
+async function startOptimize() {
+  const sql = editor.getValue().trim();
+  if (!sql) { showToast('请先输入 SQL', 'err'); switchTab('sql'); return; }
+  if (isStreaming) return;
+
+  if (!isLikelySqlStatement(sql) || isGeneralChatMessage(sql)) {
+    showToast(
+      !isLikelySqlStatement(sql)
+        ? '请输入 SQL 语句；当前内容已按对话发送'
+        : '当前内容已按对话发送',
+      'warn'
+    );
+    await sendChatMessage(sql);
+    return;
+  }
+
+  switchTab('sql');
+
+  const question = document.getElementById('questionInput').value.trim()
+    || '请分析并优化这条 SQL，给出详细建议';
+
+  hideEmpty();
+  addUserMessage(`**SQL 优化请求**\n\n\`\`\`sql\n${sql}\n\`\`\`\n\n${question}`);
+
+  const assistantEl = addAssistantMessage('', true);
+  setStreaming(true);
+
+  try {
+    const resp = await fetch(sqlOptApiUrl('/api/optimize'), {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        sql,
+        question,
+        config: dbConfig,
+        session_id: sessionId,
+        model: currentModel,
+      })
+    });
+    await handleStream(resp, assistantEl);
+  } catch(e) {
+    finishAssistantMessage(assistantEl, `❌ 请求失败: ${e.message}`);
+  } finally {
+    setStreaming(false);
+  }
+}
+
+async function runExplain() {
+  const sql = editor.getValue().trim();
+  if (!sql) { showToast('请先输入 SQL', 'err'); return; }
+  if (!isLikelySqlStatement(sql)) { showToast('请输入 SQL 语句', 'err'); return; }
+  if (!dbConfig.host) { showToast('请先配置并连接数据库', 'err'); switchTab('db'); return; }
+
+  const btn = document.getElementById('explainBtn');
+  btn.disabled = true; btn.textContent = '运行中...';
+
+  try {
+    const r = await fetch(sqlOptApiUrl('/api/explain'), {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ config: dbConfig, sql })
+    });
+    const d = await r.json();
+    document.getElementById('explainDisplay').textContent = d.result || '无结果';
+    switchTab('schema');
+    if (!d.ok) showToast('EXPLAIN 执行失败', 'err');
+    else showToast('EXPLAIN 完成', 'ok');
+  } catch(e) {
+    showToast('请求失败: ' + e.message, 'err');
+  } finally {
+    btn.disabled = false; btn.textContent = '📊 EXPLAIN';
+  }
+}
+
+async function fetchSchema() {
+  const sql = editor.getValue().trim();
+  if (!sql) { showToast('请先在 SQL 编辑页输入 SQL', 'err'); return; }
+  if (!isLikelySqlStatement(sql)) { showToast('请输入 SQL 语句', 'err'); return; }
+  if (!dbConfig.host) { showToast('请先配置并连接数据库', 'err'); switchTab('db'); return; }
+
+  try {
+    const r = await fetch(sqlOptApiUrl('/api/schema'), {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ config: dbConfig, sql })
+    });
+    const d = await r.json();
+    document.getElementById('schemaDisplay').textContent = d.schema || '未获取到';
+    document.getElementById('tableList').textContent =
+      d.tables && d.tables.length ? d.tables.join(', ') : '未识别到表名';
+    showToast('Schema 获取完成', 'ok');
+  } catch(e) {
+    showToast('获取失败: ' + e.message, 'err');
+  }
+}
+
+function clearEditor() {
+  editor.setValue('');
+  document.getElementById('questionInput').value = '';
+  document.getElementById('schemaDisplay').textContent = '暂无';
+  document.getElementById('explainDisplay').textContent = '暂无';
+  document.getElementById('tableList').textContent = '请先在 SQL 编辑页输入 SQL';
+}
+
+function loadDemo() {
+  const demos = [
+    `-- 订单查询（Oracle 风格）
+SELECT o.order_id, o.order_date, c.customer_name,
+       SUM(oi.quantity * oi.unit_price) AS total_amount
+FROM orders o
+INNER JOIN customers c ON o.customer_id = c.customer_id
+INNER JOIN order_items oi ON o.order_id = oi.order_id
+WHERE o.status = 'PENDING'
+  AND o.order_date >= SYSDATE - 30
+GROUP BY o.order_id, o.order_date, c.customer_name
+ORDER BY total_amount DESC`,
+    `-- 用户活跃度分析
+SELECT u.user_id, u.username, COUNT(l.log_id) AS login_count,
+       MAX(l.login_time) AS last_login
+FROM users u
+LEFT JOIN login_logs l ON u.user_id = l.user_id
+WHERE l.login_time >= DATE_SUB(NOW(), INTERVAL 90 DAY)
+GROUP BY u.user_id, u.username
+HAVING login_count > 5
+ORDER BY login_count DESC
+LIMIT 100`,
+    `-- 库存预警查询
+SELECT p.product_id, p.product_name, p.category,
+       i.stock_qty, i.reorder_point
+FROM products p
+JOIN inventory i ON p.product_id = i.product_id
+WHERE i.stock_qty < i.reorder_point
+  AND p.status = 'ACTIVE'
+  AND NOT EXISTS (
+    SELECT 1 FROM purchase_orders po
+    WHERE po.product_id = p.product_id
+      AND po.status IN ('PENDING', 'CONFIRMED')
+  )
+ORDER BY (i.reorder_point - i.stock_qty) DESC`
+  ];
+  const demo = demos[Math.floor(Math.random() * demos.length)];
+  editor.setValue(demo);
+  document.getElementById('questionInput').value = '请分析这条 SQL 的性能问题并给出优化建议，数据量约 500 万行';
+  switchTab('sql');
+}
+
+// ── Chat ───────────────────────────────────────────────────
+async function sendChatMessage(msg) {
+  if (!msg || isStreaming) return;
+  hideEmpty();
+  addUserMessage(msg);
+  const assistantEl = addAssistantMessage('', true);
+  setStreaming(true);
+  try {
+    const resp = await fetch(sqlOptApiUrl('/api/chat'), {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ message: msg, session_id: sessionId, model: currentModel, config: dbConfig })
+    });
+    await handleStream(resp, assistantEl);
+  } catch(e) {
+    finishAssistantMessage(assistantEl, `❌ 请求失败: ${e.message}`);
+  } finally {
+    setStreaming(false);
+  }
+}
+
+async function sendChat() {
+  const input = document.getElementById('chatInput');
+  const msg = input.value.trim();
+  if (!msg || isStreaming) return;
+  input.value = '';
+  input.style.height = 'auto';
+  await sendChatMessage(msg);
+}
+
+function askQuick(q) {
+  document.getElementById('chatInput').value = q;
+  sendChat();
+}
+
+function onChatKeydown(e) {
+  if (e.ctrlKey && e.key === 'Enter') { e.preventDefault(); sendChat(); }
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendChat(); }
+}
+
+// ── Stream handler ─────────────────────────────────────────
+async function handleStream(resp, msgEl) {
+  const reader = resp.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let fullText = '';
+  let donePayload = null;
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+
+    const lines = buffer.split('\n');
+    buffer = lines.pop();
+
+    for (const line of lines) {
+      if (!line.startsWith('data: ')) continue;
+      try {
+        const data = JSON.parse(line.slice(6));
+        if (data.text) {
+          fullText += data.text;
+          updateStreamingMessage(msgEl, fullText);
+        }
+        if (data.session_id) sessionId = data.session_id;
+        if (data.error) {
+          finishAssistantMessage(msgEl, `❌ ${data.error}`);
+          return;
+        }
+        if (data.done) {
+          donePayload = data;
+          finishAssistantMessage(msgEl, fullText, data);
+          return;
+        }
+      } catch {}
+    }
+  }
+  if (fullText) finishAssistantMessage(msgEl, fullText, donePayload);
+}
+
+// ── Message rendering ──────────────────────────────────────
+function addUserMessage(text) {
+  const container = document.getElementById('chatMessages');
+  const div = document.createElement('div');
+  div.className = 'msg user';
+  div.innerHTML = `
+    <div class="msg-avatar">👤</div>
+    <div class="msg-body">
+      <div class="msg-name">你</div>
+      <div class="msg-bubble">${renderMarkdown(text)}</div>
+    </div>`;
+  container.appendChild(div);
+  scrollChat();
+  return div;
+}
+
+function addAssistantMessage(text, streaming = false) {
+  const container = document.getElementById('chatMessages');
+  const div = document.createElement('div');
+  div.className = 'msg assistant';
+  div.innerHTML = `
+    <div class="msg-avatar">🤖</div>
+    <div class="msg-body">
+      <div class="msg-name">SQL 优化 Agent</div>
+      <div class="msg-bubble ${streaming ? 'typing-cursor' : ''}" data-stream-bubble>
+        ${streaming ? '<span style="color:var(--text3);font-size:12px">思考中...</span>' : renderMarkdown(text)}
+      </div>
+    </div>`;
+  container.appendChild(div);
+  lastAssistantMsgEl = div;
+  scrollChat();
+  return div;
+}
+
+function updateStreamingMessage(msgEl, text) {
+  const bubble = msgEl.querySelector('[data-stream-bubble]');
+  if (!bubble) return;
+  // Show raw text while streaming (faster than parsing MD every chunk)
+  bubble.innerHTML = `<div style="white-space:pre-wrap;font-size:13px;line-height:1.7">${escHtml(text)}</div>`;
+  scrollChat();
+}
+
+/** 剪贴板：优先 Clipboard API，非 HTTPS/iframe 等场景回退到 execCommand */
+function copyToClipboard(text) {
+  if (text == null || text === '') return Promise.resolve(false);
+  if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+    return navigator.clipboard.writeText(text).then(() => true).catch(() => fallbackCopyText(text));
+  }
+  return Promise.resolve(fallbackCopyText(text));
+}
+function fallbackCopyText(text) {
+  const ta = document.createElement('textarea');
+  ta.value = text;
+  ta.setAttribute('readonly', '');
+  ta.style.position = 'fixed';
+  ta.style.left = '-9999px';
+  ta.style.top = '0';
+  document.body.appendChild(ta);
+  ta.focus();
+  ta.select();
+  ta.setSelectionRange(0, text.length);
+  let ok = false;
+  try {
+    ok = document.execCommand('copy');
+  } catch (e) {}
+  document.body.removeChild(ta);
+  return ok;
+}
+
+function finishAssistantMessage(msgEl, text, doneData) {
+  const bubble = msgEl.querySelector('[data-stream-bubble]');
+  if (!bubble) return;
+  bubble.className = 'msg-bubble';
+  bubble.id = '';
+  bubble.innerHTML = renderMarkdown(text);
+  // Add copy buttons to code blocks
+  bubble.querySelectorAll('pre').forEach(pre => {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'copy-btn';
+    btn.textContent = '复制';
+    btn.onclick = () => {
+      const code = pre.querySelector('code');
+      const raw = code ? code.textContent : pre.textContent;
+      copyToClipboard(raw).then((ok) => {
+        btn.textContent = ok ? '已复制' : '失败';
+        setTimeout(() => { btn.textContent = '复制'; }, 1500);
+      });
+    };
+    pre.style.position = 'relative';
+    pre.appendChild(btn);
+  });
+
+  // Display rule engine results
+  if (doneData && doneData.rule_engine && doneData.rule_engine.rules && doneData.rule_engine.rules.length > 0) {
+    appendRuleEngineCard(msgEl, doneData.rule_engine);
+  }
+
+  // Display EXPLAIN analysis
+  if (doneData && doneData.explain_analysis && doneData.explain_analysis.issues && doneData.explain_analysis.issues.length > 0) {
+    appendExplainAnalysisCard(msgEl, doneData.explain_analysis);
+  }
+
+  // Display validation badges
+  if (doneData && doneData.validation) {
+    appendValidationBadges(msgEl, doneData.validation);
+  }
+
+  scrollChat();
+}
+
+function renderMarkdown(text) {
+  if (!text) return '';
+  try {
+    return marked.parse(text, { breaks: true, gfm: true });
+  } catch {
+    return `<pre>${escHtml(text)}</pre>`;
+  }
+}
+
+function escHtml(s) {
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+function scrollChat() {
+  const c = document.getElementById('chatMessages');
+  c.scrollTop = c.scrollHeight;
+}
+
+// ── Rule Engine Card ──────────────────────────────────────
+function appendRuleEngineCard(msgEl, ruleResult) {
+  const body = msgEl.querySelector('.msg-body');
+  if (!body) return;
+
+  const severityColors = { high: '#ff4d4f', medium: '#faad14', low: '#1890ff' };
+  const severityLabels = { high: '高', medium: '中', low: '低' };
+
+  const rulesHtml = ruleResult.rules.map(r => `
+    <div class="rule-item">
+      <span class="rule-badge" style="background:${severityColors[r.severity] || '#999'}">${severityLabels[r.severity] || r.severity}</span>
+      <div class="rule-content">
+        <div class="rule-title">${escHtml(r.title)}</div>
+        <div class="rule-detail">${escHtml(r.detail)}</div>
+        <div class="rule-suggestion">${escHtml(r.suggestion)}</div>
+      </div>
+    </div>
+  `).join('');
+
+  const card = document.createElement('div');
+  card.className = 'analysis-card rule-engine-card';
+  card.innerHTML = `
+    <div class="analysis-card-header" onclick="this.parentElement.classList.toggle('collapsed')">
+      <span class="analysis-card-icon">🔍</span>
+      <span class="analysis-card-title">规则引擎检测</span>
+      <span class="analysis-card-count">${ruleResult.rules.length} 个问题</span>
+      <span class="analysis-card-toggle">▼</span>
+    </div>
+    <div class="analysis-card-body">${rulesHtml}</div>
+  `;
+  body.appendChild(card);
+}
+
+// ── EXPLAIN Analysis Card ─────────────────────────────────
+function appendExplainAnalysisCard(msgEl, explainResult) {
+  const body = msgEl.querySelector('.msg-body');
+  if (!body) return;
+
+  const issuesHtml = explainResult.issues.map(iss => `
+    <div class="rule-item">
+      <span class="rule-badge" style="background:#faad14">EXPLAIN</span>
+      <div class="rule-content">
+        <div class="rule-title">${escHtml(iss.type)}</div>
+        <div class="rule-detail">${escHtml(iss.detail)}</div>
+        <div class="rule-suggestion">${escHtml(iss.suggestion)}</div>
+      </div>
+    </div>
+  `).join('');
+
+  const summaryParts = [];
+  if (explainResult.summary) summaryParts.push(explainResult.summary);
+  if (explainResult.total_cost != null) summaryParts.push(`总代价: ${explainResult.total_cost}`);
+
+  const card = document.createElement('div');
+  card.className = 'analysis-card explain-card';
+  card.innerHTML = `
+    <div class="analysis-card-header" onclick="this.parentElement.classList.toggle('collapsed')">
+      <span class="analysis-card-icon">📊</span>
+      <span class="analysis-card-title">执行计划分析</span>
+      <span class="analysis-card-count">${explainResult.issues.length} 个问题</span>
+      <span class="analysis-card-toggle">▼</span>
+    </div>
+    <div class="analysis-card-body">
+      ${summaryParts.length ? `<div class="explain-summary">${escHtml(summaryParts.join(' | '))}</div>` : ''}
+      ${issuesHtml}
+    </div>
+  `;
+  body.appendChild(card);
+}
+
+// ── Validation Badges ─────────────────────────────────────
+function appendValidationBadges(msgEl, validations) {
+  if (!validations || !validations.length) return;
+  const body = msgEl.querySelector('.msg-body');
+  if (!body) return;
+
+  for (const v of validations) {
+    const badge = document.createElement('div');
+    badge.className = 'validation-badges';
+
+    const items = [];
+    if (v.ok && (!v.errors || !v.errors.length)) {
+      items.push('<span class="v-badge v-ok">SQL 语法正确</span>');
+    }
+    if (v.errors) {
+      for (const e of v.errors) {
+        items.push(`<span class="v-badge v-err">${escHtml(e)}</span>`);
+      }
+    }
+    if (v.warnings) {
+      for (const w of v.warnings) {
+        items.push(`<span class="v-badge v-warn">${escHtml(w)}</span>`);
+      }
+    }
+    if (items.length) {
+      badge.innerHTML = items.join('');
+      body.appendChild(badge);
+    }
+  }
+}
+
+function hideEmpty() {
+  const el = document.getElementById('emptyState');
+  if (el) el.style.display = 'none';
+}
+
+function clearChat() {
+  const container = document.getElementById('chatMessages');
+  container.innerHTML = `
+    <div class="empty-state" id="emptyState">
+      <div class="empty-icon">⚡</div>
+      <p>对话已清空，可以开始新的优化</p>
+    </div>`;
+  const sid = sessionId;
+  sessionId = null;
+  lastAssistantMsgEl = null;
+  if (sid) fetch(sqlOptApiUrl('/api/session/' + sid), { method: 'DELETE' });
+}
+
+function copyLastReply() {
+  if (!lastAssistantMsgEl) { showToast('暂无回复可复制', 'err'); return; }
+  const bubble = lastAssistantMsgEl.querySelector('.msg-bubble');
+  if (!bubble) return;
+  copyToClipboard(bubble.innerText).then((ok) => {
+    showToast(ok ? '已复制到剪贴板' : '复制失败，请手动选择文本', ok ? 'ok' : 'err');
+  });
+}
+
+// ── UI helpers ─────────────────────────────────────────────
+function switchTab(name) {
+  document.querySelectorAll('.tab-btn').forEach((b, i) => {
+    const names = ['db','sql','schema'];
+    b.classList.toggle('active', names[i] === name);
+  });
+  document.querySelectorAll('.tab-content').forEach(c => {
+    c.classList.remove('active');
+  });
+  const el = document.getElementById('tab-' + name);
+  if (el) el.classList.add('active');
+}
+
+function setStreaming(v) {
+  isStreaming = v;
+  document.getElementById('optimizeBtn').disabled = v;
+  document.getElementById('sendBtn').disabled = v;
+  if (v) {
+    document.getElementById('optimizeBtn').innerHTML = '<div class="spinner"></div> 优化中...';
+  } else {
+    document.getElementById('optimizeBtn').innerHTML = '<span>⚡</span> 开始优化';
+  }
+}
+
+function autoResize(el) {
+  el.style.height = 'auto';
+  el.style.height = Math.min(el.scrollHeight, 120) + 'px';
+}
+
+function showToast(msg, type = 'ok') {
+  const t = document.createElement('div');
+  t.className = `toast ${type}`;
+  t.textContent = msg;
+  document.body.appendChild(t);
+  setTimeout(() => t.remove(), 3000);
+}
+
+// ── LLM Config ─────────────────────────────────────────────
+let llmConfig = {};
+
+function getLlmConfig() {
+  const provider = document.getElementById('llmProvider').value;
+  const cfg = { provider };
+  if (provider === 'openai') {
+    cfg.base_url = document.getElementById('openaiBaseUrl').value.trim();
+    cfg.api_key = document.getElementById('openaiApiKey').value.trim();
+  }
+  return cfg;
+}
+
+function onProviderChange() {
+  const p = document.getElementById('llmProvider').value;
+  const show = p === 'openai';
+  document.getElementById('openaiUrlField').style.display = show ? '' : 'none';
+  document.getElementById('openaiKeyField').style.display = show ? '' : 'none';
+  llmConfig = getLlmConfig();
+  localStorage.setItem('sqlopt_llm', JSON.stringify(llmConfig));
+  loadModels();
+}
+
+async function testLlmConn() {
+  const el = document.getElementById('llmStatus');
+  el.textContent = '测试中...';
+  el.className = 'conn-status';
+  const cfg = getLlmConfig();
+  try {
+    const r = await fetch(sqlOptApiUrl('/api/llm/test'), {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify(cfg)
+    });
+    const d = await r.json();
+    if (d.ok) {
+      el.textContent = `✅ ${d.provider} 连接成功 (${d.model_count} 个模型)`;
+      el.className = 'conn-status ok';
+    } else {
+      el.textContent = '❌ ' + (d.error || '连接失败');
+      el.className = 'conn-status err';
+    }
+  } catch (e) {
+    el.textContent = '❌ ' + e.message;
+    el.className = 'conn-status err';
+  }
+}
+
+// ── Override loadModels to support provider ────────────────
+loadModels = async function() {
+  const cfg = getLlmConfig();
+  const provider = cfg.provider || 'ollama';
+  try {
+    const url = sqlOptApiUrl('/api/models') + '?provider=' + encodeURIComponent(provider);
+    const r = await fetch(url);
+    const d = await r.json();
+    if (d.ok && d.models && d.models.length) {
+      const sel = document.getElementById('modelSelect');
+      sel.innerHTML = d.models.map(m =>
+        `<option value="${m}" ${m === currentModel ? 'selected' : ''}>${m}</option>`
+      ).join('');
+      // Update badge provider text
+      const badge = document.getElementById('modelBadge');
+      if (badge) badge.textContent = currentModel + ' (' + (d.provider || provider) + ')';
+    }
+  } catch {}
+};
+
+// ── Override updateModel to save llmConfig ─────────────────
+updateModel = function() {
+  currentModel = document.getElementById('modelSelect').value;
+  const badge = document.getElementById('modelBadge');
+  const provider = document.getElementById('llmProvider').value;
+  if (badge) badge.textContent = currentModel + ' (' + provider + ')';
+  llmConfig = getLlmConfig();
+  llmConfig.model = currentModel;
+  localStorage.setItem('sqlopt_llm', JSON.stringify(llmConfig));
+};
+
+// ── Load saved LLM config (after overrides are defined) ────
+(function loadSavedLlmConfig() {
+  try {
+    const saved = localStorage.getItem('sqlopt_llm');
+    if (!saved) return;
+    const c = JSON.parse(saved);
+    llmConfig = c;
+    if (c.provider) document.getElementById('llmProvider').value = c.provider;
+    if (c.base_url) document.getElementById('openaiBaseUrl').value = c.base_url;
+    if (c.api_key) document.getElementById('openaiApiKey').value = c.api_key;
+    onProviderChange();
+    if (c.model) {
+      currentModel = c.model;
+      document.getElementById('modelBadge').textContent = currentModel + ' (' + (c.provider || 'ollama') + ')';
+    }
+  } catch {}
+})();
+
+// ── Pass llm_config to optimize/chat requests ─────────────
+startOptimize = async function() {
+  const sql = editor.getValue().trim();
+  if (!sql) { showToast('请先输入 SQL', 'err'); switchTab('sql'); return; }
+  if (isStreaming) return;
+
+  if (!isLikelySqlStatement(sql) || isGeneralChatMessage(sql)) {
+    showToast(
+      !isLikelySqlStatement(sql)
+        ? '请输入 SQL 语句；当前内容已按对话发送'
+        : '当前内容已按对话发送',
+      'warn'
+    );
+    await sendChatMessage(sql);
+    return;
+  }
+
+  switchTab('sql');
+
+  const question = document.getElementById('questionInput').value.trim()
+    || '请分析并优化这条 SQL，给出详细建议';
+
+  hideEmpty();
+  addUserMessage(`**SQL 优化请求**\n\n\`\`\`sql\n${sql}\n\`\`\`\n\n${question}`);
+
+  const assistantEl = addAssistantMessage('', true);
+  setStreaming(true);
+
+  try {
+    llmConfig = getLlmConfig();
+    llmConfig.model = currentModel;
+    const resp = await fetch(sqlOptApiUrl('/api/optimize'), {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        sql,
+        question,
+        config: dbConfig,
+        session_id: sessionId,
+        model: currentModel,
+        llm_config: llmConfig,
+      })
+    });
+    await handleStream(resp, assistantEl);
+  } catch(e) {
+    finishAssistantMessage(assistantEl, `❌ 请求失败: ${e.message}`);
+  } finally {
+    setStreaming(false);
+  }
+};
+
+// ── Pass llm_config to chat requests ──────────────────────
+sendChatMessage = async function(msg) {
+  if (!msg || isStreaming) return;
+  hideEmpty();
+  addUserMessage(msg);
+  const assistantEl = addAssistantMessage('', true);
+  setStreaming(true);
+  try {
+    llmConfig = getLlmConfig();
+    llmConfig.model = currentModel;
+    const resp = await fetch(sqlOptApiUrl('/api/chat'), {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        message: msg, session_id: sessionId, model: currentModel,
+        config: dbConfig, llm_config: llmConfig
+      })
+    });
+    await handleStream(resp, assistantEl);
+  } catch(e) {
+    finishAssistantMessage(assistantEl, `❌ 请求失败: ${e.message}`);
+  } finally {
+    setStreaming(false);
+  }
+};
+
+// ── Opt Action Bar (after optimization) ────────────────────
+const _origFinishAssistant = finishAssistantMessage;
+finishAssistantMessage = function(msgEl, text, doneData) {
+  _origFinishAssistant(msgEl, text, doneData);
+
+  // Add action bar if opt_id present
+  if (doneData && doneData.opt_id) {
+    appendOptActions(msgEl, doneData.opt_id);
+  }
+};
+
+function appendOptActions(msgEl, optId) {
+  const body = msgEl.querySelector('.msg-body');
+  if (!body) return;
+  const div = document.createElement('div');
+  div.className = 'opt-actions';
+  div.dataset.optId = optId;
+  div.innerHTML = `
+    <button class="opt-action-btn" onclick="markOptStatus(this, ${optId}, 'ADOPTED')">✅ 已采纳</button>
+    <button class="opt-action-btn" onclick="markOptStatus(this, ${optId}, 'EXECUTED')">🚀 已执行</button>
+    <button class="opt-action-btn" onclick="markOptStatus(this, ${optId}, 'REJECTED')">❌ 未采纳</button>
+    <button class="opt-action-btn" onclick="showEffectRating(${optId})">⭐ 评价效果</button>
+  `;
+  body.appendChild(div);
+}
+
+async function markOptStatus(btn, optId, status) {
+  btn.disabled = true;
+  try {
+    const r = await fetch(sqlOptApiUrl('/api/sql-opt/' + optId + '/status'), {
+      method: 'PUT', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ status })
+    });
+    const d = await r.json();
+    if (d.code === 200) {
+      // Highlight the selected button
+      const bar = btn.parentElement;
+      bar.querySelectorAll('.opt-action-btn').forEach(b => {
+        b.disabled = true;
+        b.style.opacity = '0.4';
+      });
+      btn.style.opacity = '1';
+      btn.classList.add(status.toLowerCase());
+      showToast('状态已更新: ' + status, 'ok');
+    } else {
+      btn.disabled = false;
+      showToast(d.msg || '更新失败', 'err');
+    }
+  } catch (e) {
+    btn.disabled = false;
+    showToast('请求失败: ' + e.message, 'err');
+  }
+}
+
+function showEffectRating(optId) {
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.onclick = e => { if (e.target === overlay) overlay.remove(); };
+
+  let selectedScore = 0;
+  overlay.innerHTML = `
+    <div class="modal-box" style="max-width:400px">
+      <button class="modal-close" data-action="close">&times;</button>
+      <div class="modal-title">评价优化效果</div>
+      <div class="modal-section">
+        <div class="modal-section-title">效果评分</div>
+        <div class="effect-stars" data-stars>
+          ${[1,2,3,4,5].map(i => `<span class="effect-star" data-score="${i}">★</span>`).join('')}
+        </div>
+      </div>
+      <div class="modal-section">
+        <div class="modal-section-title">备注</div>
+        <textarea data-note style="width:100%;min-height:60px;font-size:13px;padding:8px;border:1px solid var(--border);border-radius:6px;resize:vertical" placeholder="效果描述（可选）"></textarea>
+      </div>
+      <button class="btn btn-primary" style="width:100%" data-action="submit">提交评价</button>
+    </div>`;
+  document.body.appendChild(overlay);
+
+  overlay.addEventListener('click', async (e) => {
+    const target = e.target;
+    if (target.dataset.action === 'close') { overlay.remove(); return; }
+    if (target.dataset.score) {
+      selectedScore = Number(target.dataset.score);
+      overlay.querySelectorAll('[data-stars] .effect-star').forEach(s => {
+        s.classList.toggle('active', Number(s.dataset.score) <= selectedScore);
+      });
+      return;
+    }
+    if (target.dataset.action === 'submit') {
+      target.disabled = true;
+      try {
+        const note = overlay.querySelector('[data-note]').value.trim();
+        const r = await fetch(sqlOptApiUrl('/api/sql-opt/' + optId + '/effect'), {
+          method: 'PUT', headers: {'Content-Type':'application/json'},
+          body: JSON.stringify({ effectScore: selectedScore, effectNote: note })
+        });
+        const d = await r.json();
+        if (d.code === 200) {
+          showToast('评价已保存', 'ok');
+          overlay.remove();
+        } else {
+          showToast(d.msg || '保存失败', 'err');
+          target.disabled = false;
+        }
+      } catch (err) {
+        showToast('请求失败: ' + err.message, 'err');
+        target.disabled = false;
+      }
+    }
+  });
+}
+
+// ── History Tab ────────────────────────────────────────────
+async function loadHistory() {
+  const container = document.getElementById('historyContent');
+  const status = document.getElementById('historyStatusFilter').value;
+  container.innerHTML = '<div class="history-empty">加载中...</div>';
+  try {
+    let url = sqlOptApiUrl('/api/sql-opt/list') + '?size=50';
+    if (status) url += '&status=' + encodeURIComponent(status);
+    const r = await fetch(url);
+    const d = await r.json();
+    if (d.code !== 200 || !d.data || !d.data.list || !d.data.list.length) {
+      container.innerHTML = '<div class="history-empty">暂无优化记录</div>';
+      return;
+    }
+    const rows = d.data.list.map(item => `
+      <tr onclick="showHistoryDetail(${item.OPT_ID})">
+        <td title="${escHtml(item.SQL_TEXT || '')}">${escHtml((item.SQL_TEXT || '').slice(0, 40))}${(item.SQL_TEXT||'').length > 40 ? '…' : ''}</td>
+        <td><span class="history-status ${item.STATUS}">${item.STATUS}</span></td>
+        <td>${item.EFFECT_SCORE ? '★'.repeat(item.EFFECT_SCORE) : '-'}</td>
+        <td>${item.CREATED_AT ? new Date(item.CREATED_AT).toLocaleDateString() : ''}</td>
+      </tr>
+    `).join('');
+    container.innerHTML = `
+      <table class="history-table">
+        <thead><tr><th>SQL</th><th>状态</th><th>评分</th><th>时间</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>`;
+  } catch (e) {
+    container.innerHTML = `<div class="history-empty">加载失败: ${e.message}</div>`;
+  }
+}
+
+async function showHistoryDetail(optId) {
+  try {
+    const r = await fetch(sqlOptApiUrl('/api/sql-opt/' + optId));
+    const d = await r.json();
+    if (d.code !== 200) { showToast(d.msg || '获取失败', 'err'); return; }
+    const item = d.data;
+
+    const overlay = document.createElement('div');
+    overlay.className = 'modal-overlay';
+    overlay.onclick = e => { if (e.target === overlay) overlay.remove(); };
+
+    let ruleHtml = '';
+    try {
+      const rules = typeof item.RULE_ENGINE === 'string' ? JSON.parse(item.RULE_ENGINE) : item.RULE_ENGINE;
+      if (rules && rules.rules && rules.rules.length) {
+        ruleHtml = rules.rules.map(r => `<div style="font-size:12px;padding:3px 0">- [${escHtml(r.severity)}] ${escHtml(r.title)}: ${escHtml(r.detail)}</div>`).join('');
+      }
+    } catch {}
+
+    overlay.innerHTML = `
+      <div class="modal-box">
+        <button class="modal-close" onclick="this.closest('.modal-overlay').remove()">&times;</button>
+        <div class="modal-title">优化记录 #${optId}</div>
+        <div class="modal-section">
+          <div class="modal-section-title">原始 SQL</div>
+          <div class="modal-sql">${escHtml(item.SQL_TEXT || '')}</div>
+        </div>
+        ${item.OPTIMIZED_SQL ? `<div class="modal-section">
+          <div class="modal-section-title">优化后 SQL</div>
+          <div class="modal-sql">${escHtml(item.OPTIMIZED_SQL)}</div>
+        </div>` : ''}
+        ${ruleHtml ? `<div class="modal-section">
+          <div class="modal-section-title">规则引擎检测</div>
+          ${ruleHtml}
+        </div>` : ''}
+        ${item.EXPLAIN_BEFORE ? `<div class="modal-section">
+          <div class="modal-section-title">优化前执行计划</div>
+          <div class="modal-sql">${escHtml(item.EXPLAIN_BEFORE)}</div>
+        </div>` : ''}
+        <div style="display:flex;gap:12px;font-size:12px;color:var(--text2);margin-top:8px">
+          <span>状态: <span class="history-status ${item.STATUS}">${item.STATUS}</span></span>
+          <span>评分: ${item.EFFECT_SCORE ? '★'.repeat(item.EFFECT_SCORE) : '-'}</span>
+          <span>LLM: ${escHtml(item.LLM_PROVIDER || '')}/${escHtml(item.LLM_MODEL || '')}</span>
+          <span>时间: ${item.CREATED_AT ? new Date(item.CREATED_AT).toLocaleString() : ''}</span>
+        </div>
+        ${item.EFFECT_NOTE ? `<div style="margin-top:8px;font-size:12px;color:var(--text2)">备注: ${escHtml(item.EFFECT_NOTE)}</div>` : ''}
+      </div>`;
+    document.body.appendChild(overlay);
+  } catch (e) {
+    showToast('请求失败: ' + e.message, 'err');
+  }
+}
+
+// ── Update switchTab for 4 tabs ────────────────────────────
+switchTab = function(name) {
+  const names = ['db','sql','schema','history'];
+  document.querySelectorAll('.tab-btn').forEach((b, i) => {
+    b.classList.toggle('active', names[i] === name);
+  });
+  document.querySelectorAll('.tab-content').forEach(c => {
+    c.classList.remove('active');
+  });
+  const el = document.getElementById('tab-' + name);
+  if (el) el.classList.add('active');
+  if (name === 'history') loadHistory();
+};
+</script>
+</body>
+</html>
