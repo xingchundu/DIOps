@@ -221,10 +221,12 @@
               <el-select v-model="ticketFilter.env" placeholder="环境" clearable style="width:90px" @change="loadTickets">
                 <el-option label="PROD" value="PROD"/><el-option label="STAGING" value="STAGING"/><el-option label="DEV" value="DEV"/>
               </el-select>
-              <el-button @click="loadTickets" :icon="Refresh">刷新</el-button>
+              <el-button native-type="button" :loading="ticketsLoading" @click.prevent.stop="refreshPublishTickets">
+                <el-icon class="el-icon--left"><Refresh /></el-icon>刷新
+              </el-button>
               <el-button type="primary" @click="newTicketVisible=true">新建工单</el-button>
             </div>
-            <el-table :data="tickets" size="small" stripe>
+            <el-table v-loading="ticketsLoading" :data="tickets" size="small" stripe>
               <el-table-column prop="TICKET_NO" label="工单号" width="170"/>
               <el-table-column prop="TITLE" label="标题" min-width="150" show-overflow-tooltip/>
               <el-table-column prop="TICKET_TYPE" label="类型" width="85"><template #default="{row}"><el-tag size="small">{{row.TICKET_TYPE==='SQL_PUBLISH'?'SQL发布':'DDL审核'}}</el-tag></template></el-table-column>
@@ -1146,6 +1148,7 @@
           </el-timeline-item>
         </el-timeline>
       </div>
+      <el-empty v-else description="暂无工单数据"/>
     </el-dialog>
 
     <!-- 执行工单 Dialog -->
@@ -2027,13 +2030,41 @@ async function doTriggerFault() {
 }
 
 // ── PUBLISH ────────────────────────────────────────────────
+const ticketsLoading = ref(false)
+
+function normalizePublishTicket(row) {
+  if (!row) return null
+  const t = { ...row }
+  if (!t.REVIEW_RESULT_JSON && t.REVIEW_RESULT) {
+    try { t.REVIEW_RESULT_JSON = JSON.parse(String(t.REVIEW_RESULT)) } catch { t.REVIEW_RESULT_JSON = null }
+  }
+  if (!t.EXEC_RESULT_JSON && t.EXEC_RESULT) {
+    try { t.EXEC_RESULT_JSON = JSON.parse(String(t.EXEC_RESULT)) } catch { t.EXEC_RESULT_JSON = null }
+  }
+  return t
+}
+
 async function loadTickets() {
   const p = {}
   if(ticketFilter.status)     p.status     = ticketFilter.status
   if(ticketFilter.ticketType) p.ticketType = ticketFilter.ticketType
   if(ticketFilter.env)        p.env        = ticketFilter.env
-  const r = await automationApi.publishTickets(p).catch(()=>({data:[]}))
-  tickets.value = r.data||[]
+  ticketsLoading.value = true
+  try {
+    const r = await automationApi.publishTickets(p)
+    tickets.value = Array.isArray(r.data) ? [...r.data] : []
+    return true
+  } catch (e) {
+    tickets.value = []
+    ElMessage.error(e?.message || '加载发布工单失败')
+    return false
+  } finally {
+    ticketsLoading.value = false
+  }
+}
+async function refreshPublishTickets() {
+  const ok = await loadTickets()
+  if (ok) ElMessage.success('发布工单列表已刷新')
 }
 async function loadDdlRules() {
   const r = await automationApi.ddlRules().catch(()=>({data:[]}))
@@ -2057,8 +2088,18 @@ async function submitTicket() {
   } catch {} finally { saving.value=false }
 }
 async function viewTicket(id) {
-  const r = await automationApi.publishTicket(id).catch(()=>({data:null}))
-  currentTicket.value = r.data; ticketDetailVisible.value=true
+  try {
+    const r = await automationApi.publishTicket(id)
+    const row = normalizePublishTicket(r.data)
+    if (!row) {
+      ElMessage.error('工单详情为空')
+      return
+    }
+    currentTicket.value = row
+    ticketDetailVisible.value = true
+  } catch (e) {
+    ElMessage.error(e?.message || '加载工单详情失败')
+  }
 }
 // 打开完整审核弹窗（加载工单详情）
 async function reviewTicket(row, defaultAction) {
@@ -2070,8 +2111,15 @@ async function reviewTicket(row, defaultAction) {
   reviewLoading.value  = true
   try {
     const r = await automationApi.publishTicket(row.TICKET_ID)
-    reviewingTicket.value = r.data
-  } catch {} finally { reviewLoading.value = false }
+    const detail = normalizePublishTicket(r.data)
+    if (!detail) {
+      ElMessage.error('工单详情加载失败')
+      return
+    }
+    reviewingTicket.value = detail
+  } catch (e) {
+    ElMessage.error(e?.message || '工单详情加载失败')
+  } finally { reviewLoading.value = false }
 }
 // 提交审核决定
 async function submitReview() {
@@ -2085,7 +2133,9 @@ async function submitReview() {
     ElMessage.success(reviewAction.value === 'APPROVE' ? '✅ 审批通过，工单可执行发布' : '❌ 已拒绝，工单退回提交人')
     reviewDlgVisible.value = false
     loadTickets()
-  } catch {} finally { saving.value = false }
+  } catch (e) {
+    ElMessage.error(e?.message || '审批提交失败')
+  } finally { saving.value = false }
 }
 function openExecDlg(row) { execRow.value=row; execGrayPct.value=row.GRAY_PERCENT||100; execDlgVisible.value=true }
 async function doExecuteTicket() {

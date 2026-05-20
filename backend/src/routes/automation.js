@@ -739,47 +739,104 @@ router.get('/fault/logs', async (req, res) => {
 //           任意节点可 → REJECTED / ROLLED_BACK
 // 创建时强制 SQL 治理预审，CRITICAL 风险默认拦截
 
-/** 工单列表 */
-router.get('/publish/tickets', async (req, res) => {
-  const { status, ticketType, instanceId, env } = req.query;
-  const binds = [];
+function oraMissingColumn(e, names) {
+  const m = String(e?.message || '').toUpperCase();
+  if (!m.includes('ORA-00904')) return false;
+  return names.some((n) => m.includes(String(n).toUpperCase()));
+}
+
+function buildPublishTicketListSql({ status, ticketType, instanceId, env }, binds, withEnvCol) {
+  const envSel = withEnvCol
+    ? 't.ENV,t.GOVERNANCE_AUDIT_ID'
+    : `'PROD' AS ENV, CAST(NULL AS NUMBER) AS GOVERNANCE_AUDIT_ID`;
   let sql = `SELECT t.TICKET_ID,t.TICKET_NO,t.TITLE,t.TICKET_TYPE,t.INSTANCE_ID,t.DB_NAME,
-                    t.STATUS,t.RISK_LEVEL,t.GRAY_PERCENT,t.ENV,t.GOVERNANCE_AUDIT_ID,
+                    t.STATUS,t.RISK_LEVEL,t.GRAY_PERCENT,${envSel},
                     t.CREATED_AT,t.REVIEWED_AT,t.EXECUTED_AT,
                     u1.REAL_NAME SUBMITTER, i.INSTANCE_NAME
              FROM PUBLISH_TICKET t
              LEFT JOIN SYS_USER u1     ON t.SUBMITTED_BY   = u1.USER_ID
              LEFT JOIN CMDB_INSTANCE i ON t.INSTANCE_ID    = i.INSTANCE_ID
              WHERE 1=1`;
-  if (status)     { sql += ` AND t.STATUS=:${binds.length+1}`;      binds.push(status); }
-  if (ticketType) { sql += ` AND t.TICKET_TYPE=:${binds.length+1}`; binds.push(ticketType); }
-  if (instanceId) { sql += ` AND t.INSTANCE_ID=:${binds.length+1}`; binds.push(instanceId); }
-  if (env)        { sql += ` AND t.ENV=:${binds.length+1}`;         binds.push(env); }
+  if (status)     { sql += ` AND t.STATUS=:${binds.length + 1}`;      binds.push(status); }
+  if (ticketType) { sql += ` AND t.TICKET_TYPE=:${binds.length + 1}`; binds.push(ticketType); }
+  if (instanceId) { sql += ` AND t.INSTANCE_ID=:${binds.length + 1}`; binds.push(instanceId); }
+  if (env && withEnvCol) { sql += ` AND t.ENV=:${binds.length + 1}`; binds.push(env); }
   sql += ` ORDER BY t.TICKET_ID DESC FETCH NEXT 50 ROWS ONLY`;
-  try { const r = await db.execute(sql, binds); res.json({ code:200, data:r.rows }); }
-  catch (e) { res.json({ code:500, msg:e.message }); }
+  return sql;
+}
+
+/** 工单列表 */
+router.get('/publish/tickets', async (req, res) => {
+  try {
+    const binds = [];
+    let sql = buildPublishTicketListSql(req.query, binds, true);
+    try {
+      const r = await db.execute(sql, binds);
+      return res.json({ code: 200, data: r.rows });
+    } catch (e) {
+      if (!oraMissingColumn(e, ['ENV', 'GOVERNANCE_AUDIT_ID'])) throw e;
+      const binds2 = [];
+      sql = buildPublishTicketListSql(req.query, binds2, false);
+      const r = await db.execute(sql, binds2);
+      return res.json({ code: 200, data: r.rows });
+    }
+  } catch (e) { res.json({ code: 500, msg: e.message }); }
 });
 
-/** 工单详情 */
-router.get('/publish/tickets/:id', async (req, res) => {
-  try {
-    const r = await db.execute(
-      `SELECT t.*, u1.REAL_NAME SUBMITTER, i.INSTANCE_NAME
+/** 工单详情行映射（CLOB 已 SUBSTR 为字符串） */
+function mapPublishTicketRow(row) {
+  if (!row) return row;
+  const out = { ...row };
+  if (out.REVIEW_RESULT != null && out.REVIEW_RESULT !== '') {
+    try { out.REVIEW_RESULT_JSON = JSON.parse(String(out.REVIEW_RESULT)); } catch { out.REVIEW_RESULT_JSON = null; }
+  }
+  if (out.EXEC_RESULT != null && out.EXEC_RESULT !== '') {
+    try { out.EXEC_RESULT_JSON = JSON.parse(String(out.EXEC_RESULT)); } catch { out.EXEC_RESULT_JSON = null; }
+  }
+  return out;
+}
+
+function buildPublishTicketDetailSql(withEnvCol) {
+  const envSel = withEnvCol
+    ? `NVL(t.ENV, 'PROD') AS ENV, t.GOVERNANCE_AUDIT_ID`
+    : `'PROD' AS ENV, CAST(NULL AS NUMBER) AS GOVERNANCE_AUDIT_ID`;
+  return `SELECT t.TICKET_ID, t.TICKET_NO, t.TITLE, t.TICKET_TYPE, t.INSTANCE_ID, t.DB_NAME,
+              t.STATUS, t.GRAY_PERCENT, t.RISK_LEVEL, t.SUBMITTED_BY, t.REVIEWED_BY,
+              t.REVIEWED_AT, t.EXECUTED_BY, t.EXECUTED_AT, t.CREATED_AT, t.UPDATED_AT,
+              ${envSel},
+              DBMS_LOB.SUBSTR(t.SQL_CONTENT, 32000, 1) AS SQL_CONTENT,
+              DBMS_LOB.SUBSTR(t.ROLLBACK_SQL, 32000, 1) AS ROLLBACK_SQL,
+              DBMS_LOB.SUBSTR(t.REVIEW_RESULT, 4000, 1) AS REVIEW_RESULT,
+              DBMS_LOB.SUBSTR(t.EXEC_RESULT, 4000, 1) AS EXEC_RESULT,
+              DBMS_LOB.SUBSTR(t.EXEC_PLAN, 4000, 1) AS EXEC_PLAN,
+              u1.REAL_NAME AS SUBMITTER, i.INSTANCE_NAME
        FROM PUBLISH_TICKET t
        LEFT JOIN SYS_USER u1     ON t.SUBMITTED_BY = u1.USER_ID
        LEFT JOIN CMDB_INSTANCE i ON t.INSTANCE_ID  = i.INSTANCE_ID
-       WHERE t.TICKET_ID=:1`, [req.params.id]
-    );
+       WHERE t.TICKET_ID=:1`;
+}
+
+/** 工单详情（避免 SELECT * 返回 Lob 导致接口失败） */
+router.get('/publish/tickets/:id', async (req, res) => {
+  const ticketId = req.params.id;
+  try {
+    let r;
+    try {
+      r = await db.execute(buildPublishTicketDetailSql(true), [ticketId]);
+    } catch (e) {
+      if (!oraMissingColumn(e, ['ENV', 'GOVERNANCE_AUDIT_ID'])) throw e;
+      r = await db.execute(buildPublishTicketDetailSql(false), [ticketId]);
+    }
     if (!r.rows.length) return res.json({ code:404, msg:'工单不存在' });
-    const row = r.rows[0];
+    const row = mapPublishTicketRow(r.rows[0]);
     const reviews = await db.execute(
-      `SELECT rv.*, u.REAL_NAME OPERATOR FROM PUBLISH_REVIEW rv
+      `SELECT rv.REVIEW_ID, rv.TICKET_ID, rv.ACTION, rv."COMMENT", rv.OPERATED_BY, rv.CREATED_AT,
+              u.REAL_NAME AS OPERATOR
+       FROM PUBLISH_REVIEW rv
        LEFT JOIN SYS_USER u ON rv.OPERATED_BY = u.USER_ID
-       WHERE rv.TICKET_ID=:1 ORDER BY rv.CREATED_AT`, [req.params.id]
+       WHERE rv.TICKET_ID=:1 ORDER BY rv.CREATED_AT`, [ticketId]
     );
     row.REVIEWS = reviews.rows;
-    try { row.REVIEW_RESULT_JSON = JSON.parse(row.REVIEW_RESULT); } catch {}
-    try { row.EXEC_RESULT_JSON   = JSON.parse(row.EXEC_RESULT); }   catch {}
     res.json({ code:200, data:row });
   } catch (e) { res.json({ code:500, msg:e.message }); }
 });
