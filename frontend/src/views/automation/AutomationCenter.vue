@@ -100,7 +100,9 @@
               <el-table-column prop="DB_TYPE" label="DB类型" width="90"/>
               <el-table-column prop="OVERALL_SCORE" label="评分" width="70"><template #default="{row}"><span :class="scoreClass(row.OVERALL_SCORE)">{{row.OVERALL_SCORE}}</span></template></el-table-column>
               <el-table-column prop="OVERALL_STATUS" label="状态" width="90"><template #default="{row}"><el-tag :type="statusColor(row.OVERALL_STATUS)" size="small">{{row.OVERALL_STATUS}}</el-tag></template></el-table-column>
-              <el-table-column prop="SUMMARY" label="摘要" min-width="200" show-overflow-tooltip/>
+              <el-table-column prop="SUMMARY" label="摘要" min-width="200" show-overflow-tooltip>
+                <template #default="{row}">{{ reportSummaryText(row) }}</template>
+              </el-table-column>
               <el-table-column prop="CREATED_AT" label="巡检时间" width="160"><template #default="{row}">{{fmtTime(row.CREATED_AT)}}</template></el-table-column>
               <el-table-column label="报告" width="130">
                 <template #default="{row}">
@@ -139,10 +141,12 @@
               <el-select v-model="faultFilter.dbType" placeholder="DB类型" clearable style="width:120px" @change="loadFaultPolicies">
                 <el-option v-for="t in dbTypes" :key="t" :label="t" :value="t"/>
               </el-select>
-              <el-button @click="loadFaultPolicies" :icon="Refresh">刷新</el-button>
+              <el-button native-type="button" :loading="faultPoliciesLoading" @click.prevent.stop="refreshFaultPolicies">
+                <el-icon class="el-icon--left"><Refresh /></el-icon>刷新
+              </el-button>
               <el-button v-if="canMutate" type="primary" @click="openFaultDlg()">新建策略</el-button>
             </div>
-            <el-table :data="faultPolicies" size="small" stripe>
+            <el-table v-loading="faultPoliciesLoading" :data="faultPolicies" size="small" stripe>
               <el-table-column prop="POLICY_NAME" label="策略名称" min-width="160"/>
               <el-table-column prop="DB_TYPE" label="数据库" width="90"><template #default="{row}"><el-tag size="small">{{row.DB_TYPE}}</el-tag></template></el-table-column>
               <el-table-column prop="FAULT_TYPE" label="故障类型" width="180"><template #default="{row}"><el-tag type="danger" size="small">{{faultTypeLabel(row.FAULT_TYPE)}}</el-tag></template></el-table-column>
@@ -171,9 +175,11 @@
               <el-select v-model="faultLogFilter.faultType" placeholder="故障类型" clearable style="width:160px" @change="loadFaultLogs">
                 <el-option v-for="(label,key) in faultTypeMap" :key="key" :label="label" :value="key"/>
               </el-select>
-              <el-button @click="loadFaultLogs" :icon="Refresh">刷新</el-button>
+              <el-button native-type="button" :loading="faultLogsLoading" @click.prevent.stop="refreshFaultLogs">
+                <el-icon class="el-icon--left"><Refresh /></el-icon>刷新
+              </el-button>
             </div>
-            <el-table :data="faultLogs" size="small" stripe>
+            <el-table v-loading="faultLogsLoading" :data="faultLogs" size="small" stripe>
               <el-table-column prop="INSTANCE_NAME" label="实例" min-width="120"/>
               <el-table-column prop="FAULT_TYPE" label="故障类型" width="170"><template #default="{row}">{{faultTypeLabel(row.FAULT_TYPE)}}</template></el-table-column>
               <el-table-column prop="ACTION_TYPE" label="处理方式" width="110">
@@ -816,8 +822,7 @@
         <el-form-item label="策略名称"><el-input v-model="faultForm.policyName"/></el-form-item>
         <el-form-item label="数据库类型">
           <el-select v-model="faultForm.dbType" @change="faultForm.faultType=''">
-            <el-option label="MYSQL" value="MYSQL"/><el-option label="ORACLE" value="ORACLE"/>
-            <el-option label="POSTGRESQL" value="POSTGRESQL"/>
+            <el-option v-for="t in dbTypes" :key="t" :label="t" :value="t"/>
           </el-select>
         </el-form-item>
         <el-form-item label="故障类型">
@@ -1413,6 +1418,8 @@ const faultTypesFor = db => {
     MYSQL:   ['REPL_DELAY','REPL_BROKEN','DISK_FULL','SLOW_QUERY','CONN_SURGE'].map(v=>({v,l:faultTypeMap[v]})),
     ORACLE:  ['TEMP_FULL','FRA_FULL','SESSION_ABNORMAL','SLOW_QUERY'].map(v=>({v,l:faultTypeMap[v]})),
     POSTGRESQL:[{v:'REPL_DELAY',l:faultTypeMap['REPL_DELAY']},{v:'DISK_FULL',l:faultTypeMap['DISK_FULL']},{v:'SLOW_QUERY',l:faultTypeMap['SLOW_QUERY']}],
+    DAMENG:  ['TEMP_FULL','FRA_FULL','SESSION_ABNORMAL','SLOW_QUERY'].map(v=>({v,l:faultTypeMap[v]})),
+    GOLDENDB:['REPL_DELAY','REPL_BROKEN','DISK_FULL','SLOW_QUERY','CONN_SURGE'].map(v=>({v,l:faultTypeMap[v]})),
     ALL:     Object.entries(faultTypeMap).map(([v,l])=>({v,l})),
   }
   return m[db]||Object.entries(faultTypeMap).map(([v,l])=>({v,l}))
@@ -1468,8 +1475,10 @@ const reportDetail = ref(null)
 // Fault
 const faultTab = ref('policies')
 const faultPolicies = ref([])
+const faultPoliciesLoading = ref(false)
 const faultFilter = reactive({dbType:''})
 const faultLogs = ref([])
+const faultLogsLoading = ref(false)
 const faultLogFilter = reactive({status:'', faultType:''})
 const faultDashboard = ref(null)
 const faultDlgVisible = ref(false)
@@ -1596,11 +1605,23 @@ const reportDetailCols = type => {
   }
   return maps[type]||[]
 }
+const inspectReportStatusLabel = s => ({ NORMAL:'正常', WARNING:'预警', CRITICAL:'严重' })[String(s||'').toUpperCase()] || s || ''
+/** 巡检报告摘要：优先展示「巡检完成，评分」；兼容历史 Word 文案 */
+function reportSummaryText(row) {
+  const score = row?.OVERALL_SCORE
+  if (score != null && score !== '') {
+    const st = inspectReportStatusLabel(row.OVERALL_STATUS)
+    return `巡检完成，评分 ${score}${st ? `，${st}` : ''}`
+  }
+  const raw = String(row?.SUMMARY || '')
+  if (/Word巡检报告|db_inspection\.py/.test(raw)) return '巡检完成，评分 -'
+  return raw || '巡检完成，评分 -'
+}
 
 // ── Switch module & load ───────────────────────────────────
 function switchModule(key) {
   activeModule.value = key
-  if (key==='inspect') { loadScripts(); loadTasks(); loadInspectTemplates() }
+  if (key==='inspect') { loadScripts(); loadTasks(); loadInspectTemplates(); loadAllInspectReports() }
   if (key==='fault') { loadFaultPolicies(); loadFaultLogs(); loadFaultDashboard() }
   if (key==='publish') { loadTickets(); loadDdlRules() }
   if (key==='sql') { loadAuditHistory(); loadScoreConfig(); loadBaselines(); loadRegressions(); loadSqlHealthOverview() }
@@ -1656,10 +1677,18 @@ async function deleteInspectTask(id) {
   loadTasks()
 }
 async function loadReports(cat) {
-  const p = {reportType:cat}; if(reportFilter.instanceId) p.instanceId=reportFilter.instanceId
-  const r = await automationApi.inspectReports(p).catch(()=>({data:[]}))
-  reportMap[cat] = r.data||[]
+  const p = { reportType: cat, page: 1, pageSize: 20 }
+  if (reportFilter.instanceId) p.instanceId = reportFilter.instanceId
+  const r = await automationApi.inspectReports(p).catch(()=>({ data: [] }))
+  reportMap[cat] = r.data || []
 }
+function loadAllInspectReports() {
+  for (const cat of reportCategories) loadReports(cat.v)
+}
+watch(inspectTab, (tab) => {
+  if (activeModule.value !== 'inspect') return
+  if (String(tab).startsWith('rpt_')) loadReports(tab.slice(4))
+})
 async function runTask(id) {
   runningTask.value = id
   try {
@@ -1694,6 +1723,7 @@ async function runTask(id) {
     taskRunDetailVisible.value = true
     if (Number(j.code) === 200) {
       ElMessage.success(j.msg || '巡检完成')
+      loadAllInspectReports()
     } else {
       ElMessage.error(j.msg || '巡检失败')
     }
@@ -1907,19 +1937,49 @@ async function loadFaultDashboard() {
 }
 async function loadFaultPolicies() {
   const p = {}; if(faultFilter.dbType) p.dbType=faultFilter.dbType
-  const r = await automationApi.faultPolicies(p).catch(()=>({data:[]}))
-  faultPolicies.value = r.data||[]
+  faultPoliciesLoading.value = true
+  try {
+    const r = await automationApi.faultPolicies(p)
+    faultPolicies.value = Array.isArray(r.data) ? [...r.data] : []
+    return true
+  } catch (e) {
+    faultPolicies.value = []
+    ElMessage.error(e?.message || '加载故障策略失败')
+    return false
+  } finally {
+    faultPoliciesLoading.value = false
+  }
+}
+async function refreshFaultPolicies() {
+  const ok = await loadFaultPolicies()
+  await loadFaultDashboard()
+  if (ok) ElMessage.success('故障策略已刷新')
 }
 async function loadFaultLogs() {
   const p = {}
   if(faultLogFilter.status)    p.status    = faultLogFilter.status
   if(faultLogFilter.faultType) p.faultType = faultLogFilter.faultType
-  const r = await automationApi.faultLogs(p).catch(()=>({data:[]}))
-  faultLogs.value = r.data||[]
+  faultLogsLoading.value = true
+  try {
+    const r = await automationApi.faultLogs(p)
+    faultLogs.value = Array.isArray(r.data) ? [...r.data] : []
+    return true
+  } catch (e) {
+    faultLogs.value = []
+    ElMessage.error(e?.message || '加载执行历史失败')
+    return false
+  } finally {
+    faultLogsLoading.value = false
+  }
+}
+async function refreshFaultLogs() {
+  const ok = await loadFaultLogs()
+  await loadFaultDashboard()
+  if (ok) ElMessage.success('执行历史已刷新')
 }
 function openFaultDlg(row) {
-  if(row) Object.assign(faultForm,{policyId:row.POLICY_ID,policyName:row.POLICY_NAME,dbType:row.DB_TYPE,faultType:row.FAULT_TYPE,actionType:row.ACTION_TYPE,actionScript:row.ACTION_SCRIPT||'',enabled:!!row.ENABLED})
-  else Object.assign(faultForm,{policyId:null,policyName:'',dbType:'MYSQL',faultType:'',actionType:'AUTO_FIX',actionScript:'',enabled:true})
+  if(row) Object.assign(faultForm,{policyId:row.POLICY_ID,policyName:row.POLICY_NAME,dbType:row.DB_TYPE,faultType:row.FAULT_TYPE,actionType:row.ACTION_TYPE,actionScript:row.ACTION_SCRIPT||'',enabled:!!row.ENABLED,conditionJson:row.CONDITION_JSON||null})
+  else Object.assign(faultForm,{policyId:null,policyName:'',dbType:'MYSQL',faultType:'',actionType:'AUTO_FIX',actionScript:'',enabled:true,conditionJson:null})
   faultDlgVisible.value=true
 }
 async function saveFaultPolicy() {
@@ -1927,10 +1987,16 @@ async function saveFaultPolicy() {
   if(faultForm.actionType==='HA_FAILOVER' && !faultForm.instanceIds?.length) return ElMessage.warning('HA_FAILOVER 策略必须指定适用实例')
   saving.value=true
   try {
-    if(faultForm.policyId) await automationApi.updateFaultPolicy(faultForm.policyId,faultForm)
-    else await automationApi.createFaultPolicy(faultForm)
+    const payload = { ...faultForm }
+    if (typeof payload.conditionJson === 'string' && payload.conditionJson.trim()) {
+      try { payload.conditionJson = JSON.parse(payload.conditionJson) } catch { /* 保留原文 */ }
+    }
+    if(faultForm.policyId) await automationApi.updateFaultPolicy(faultForm.policyId, payload)
+    else await automationApi.createFaultPolicy(payload)
     ElMessage.success('保存成功'); faultDlgVisible.value=false; loadFaultPolicies()
-  } catch {} finally { saving.value=false }
+  } catch (e) {
+    ElMessage.error(e?.message || '保存失败')
+  } finally { saving.value=false }
 }
 async function deleteFaultPolicy(id) {
   await ElMessageBox.confirm('确认删除该故障策略？','提示',{type:'warning'}).catch(()=>{throw ''})

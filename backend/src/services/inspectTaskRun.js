@@ -32,6 +32,20 @@ const runningInspectTasks = new Set();
 
 const INSPECT_REPORT_TYPES = ['HEALTH', 'RISK', 'PARAMETER', 'SPACE', 'HA'];
 
+const REPORT_TYPE_LABEL = {
+  HEALTH: '健康报告',
+  RISK: '风险报告',
+  PARAMETER: '参数异常',
+  SPACE: '空间风险',
+  HA: 'HA风险',
+};
+
+function buildInspectReportSummary(category, score, status) {
+  const label = REPORT_TYPE_LABEL[category] || category;
+  const st = status ? `，${status}` : '';
+  return `${label} 巡检完成，评分 ${score}${st}`;
+}
+
 function inspectLog(verboseConsole, session, ...args) {
   const line = args
     .map((a) =>
@@ -168,9 +182,7 @@ async function runWithConnection(
 
   payloadObj.overallScore  = score;
   payloadObj.overallStatus = finalStatus;
-  payloadObj.summary = hasScript
-    ? `${instRow.INSTANCE_NAME} ${category} 巡检完成；脚本语句错误 ${errors.length} 条，分段 ${sections.length}`
-    : `${instRow.INSTANCE_NAME} ${category} Word巡检报告（db_inspection.py 生成）`;
+  payloadObj.summary = buildInspectReportSummary(category, score, finalStatus);
 
   const ins = await db.execute(
     `INSERT INTO INSPECT_REPORT

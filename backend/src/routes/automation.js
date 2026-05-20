@@ -595,15 +595,16 @@ router.get('/fault/dashboard', async (req, res) => {
   } catch (e) { res.json({ code:500, msg: e.message }); }
 });
 
-/** 故障策略列表 */
+/** 故障策略列表（列表不直接 SELECT CLOB，避免 Lob 无法 JSON 序列化导致前端空白） */
 router.get('/fault/policies', async (req, res) => {
   const { dbType } = req.query;
   const binds = [];
-  let sql = `SELECT p.*, i.INSTANCE_NAME
-             FROM FAULT_POLICY p LEFT JOIN CMDB_INSTANCE i ON (
-               INSTR(NVL(p.INSTANCE_IDS,'[]'), TO_CHAR(i.INSTANCE_ID)) > 0 AND ROWNUM=1
-             ) WHERE 1=1`;
-  if (dbType) { sql += ` AND p.DB_TYPE=:1`; binds.push(dbType); }
+  let sql = `SELECT p.POLICY_ID, p.POLICY_NAME, p.DB_TYPE, p.FAULT_TYPE, p.ACTION_TYPE, p.ENABLED,
+                    p.INSTANCE_IDS, p.CREATED_BY, p.CREATED_AT, p.UPDATED_AT,
+                    DBMS_LOB.SUBSTR(p.CONDITION_JSON, 4000, 1) AS CONDITION_JSON,
+                    DBMS_LOB.SUBSTR(p.ACTION_SCRIPT, 4000, 1) AS ACTION_SCRIPT
+             FROM FAULT_POLICY p WHERE 1=1`;
+  if (dbType) { sql += ` AND p.DB_TYPE=:${binds.length + 1}`; binds.push(dbType); }
   sql += ` ORDER BY p.POLICY_ID DESC`;
   try { const r = await db.execute(sql, binds); res.json({ code:200, data:r.rows }); }
   catch (e) { res.json({ code:500, msg:e.message }); }
@@ -710,11 +711,14 @@ router.post('/fault/auto-process', async (req, res) => {
   } catch (e) { res.json({ code:500, msg:e.message }); }
 });
 
-/** 故障执行历史（含 HA 关联标注） */
+/** 故障执行历史（含 HA 关联标注；DETAIL 用 SUBSTR 避免 Lob 序列化失败） */
 router.get('/fault/logs', async (req, res) => {
   const { instanceId, status, faultType } = req.query;
   const binds = [];
-  let sql = `SELECT l.*, p.POLICY_NAME, p.DB_TYPE, p.ACTION_TYPE, i.INSTANCE_NAME
+  let sql = `SELECT l.LOG_ID, l.POLICY_ID, l.INSTANCE_ID, l.FAULT_TYPE, l.TRIGGER_SOURCE, l.STATUS,
+                    l.HA_CORRELATION_ID, l.STARTED_AT, l.FINISHED_AT, l.CREATED_BY, l.CREATED_AT,
+                    DBMS_LOB.SUBSTR(l.DETAIL, 4000, 1) AS DETAIL,
+                    p.POLICY_NAME, p.DB_TYPE, p.ACTION_TYPE, i.INSTANCE_NAME
              FROM FAULT_EXEC_LOG l
              LEFT JOIN FAULT_POLICY p    ON l.POLICY_ID    = p.POLICY_ID
              LEFT JOIN CMDB_INSTANCE i   ON l.INSTANCE_ID  = i.INSTANCE_ID
