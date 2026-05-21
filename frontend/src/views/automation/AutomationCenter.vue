@@ -764,7 +764,7 @@
               </el-button>
             </div>
             <el-empty v-if="!bkStatsLoading && !hasBkStatsData" description="无结果" />
-            <div v-else-if="bkStats" class="stats-cards">
+            <div v-else-if="hasBkStatsData" class="stats-cards">
               <el-card v-for="s in bkStats.statusSummary||[]" :key="s.STATUS" class="stat-card">
                 <div class="stat-title">{{s.STATUS}}</div>
                 <div class="stat-value" :class="s.STATUS==='FAILED'?'text-danger':'text-success'">{{s.CNT}} 次</div>
@@ -1743,7 +1743,7 @@ const restoreDlgVisible = ref(false)
 const restoreForm = reactive({instanceId:null,restoreType:'PITR',targetTime:'',targetTable:'',flashbackScn:''})
 const hasBkStatsData = computed(() => {
   const s = bkStats.value
-  if (!s) return false
+  if (!s || typeof s !== 'object') return false
   return (Array.isArray(s.statusSummary) && s.statusSummary.length > 0)
     || (Array.isArray(s.topFailures) && s.topFailures.length > 0)
 })
@@ -2794,16 +2794,32 @@ async function runCostAnalysis() {
 }
 
 // ── BACKUP ─────────────────────────────────────────────────
-function showBackupLoadResult(ok, count, label) {
+function normalizeBackupList(data) {
+  if (Array.isArray(data)) return [...data]
+  if (data && Array.isArray(data.list)) return [...data.list]
+  if (data && Array.isArray(data.rows)) return [...data.rows]
+  return []
+}
+function normalizeBkStats(data) {
+  if (!data || typeof data !== 'object') {
+    return { statusSummary: [], topFailures: [] }
+  }
+  return {
+    statusSummary: Array.isArray(data.statusSummary) ? [...data.statusSummary] : [],
+    topFailures: Array.isArray(data.topFailures) ? [...data.topFailures] : [],
+  }
+}
+/** 备份模块「刷新」：成功必有提示（无数据也说刷新完成，避免“无反应”） */
+function showBackupRefreshResult(ok, count, label) {
   if (!ok) return
-  if (count > 0) ElMessage.success(`已加载 ${count} 条${label}`)
-  else ElMessage.warning('查询无结果')
+  if (count > 0) ElMessage.success(`已刷新，共 ${count} 条${label}`)
+  else ElMessage.success(`${label}刷新完成，暂无数据`)
 }
 async function loadBackupPolicies() {
   bkPoliciesLoading.value = true
   try {
     const r = await automationApi.backupPolicies()
-    bkPolicies.value = Array.isArray(r.data) ? [...r.data] : []
+    bkPolicies.value = normalizeBackupList(r?.data)
     return true
   } catch (e) {
     bkPolicies.value = []
@@ -2815,7 +2831,7 @@ async function loadBackupPolicies() {
 }
 async function refreshBackupPolicies() {
   const ok = await loadBackupPolicies()
-  showBackupLoadResult(ok, bkPolicies.value.length, '备份策略')
+  showBackupRefreshResult(ok, bkPolicies.value.length, '备份策略')
 }
 async function loadBkRecords() {
   const p = {}
@@ -2824,7 +2840,7 @@ async function loadBkRecords() {
   bkRecordsLoading.value = true
   try {
     const r = await automationApi.backupRecords(p)
-    bkRecords.value = Array.isArray(r.data) ? [...r.data] : []
+    bkRecords.value = normalizeBackupList(r?.data)
     return true
   } catch (e) {
     bkRecords.value = []
@@ -2836,16 +2852,16 @@ async function loadBkRecords() {
 }
 async function refreshBkRecords() {
   const ok = await loadBkRecords()
-  showBackupLoadResult(ok, bkRecords.value.length, '备份记录')
+  showBackupRefreshResult(ok, bkRecords.value.length, '备份记录')
 }
 async function loadBkStats() {
   bkStatsLoading.value = true
   try {
     const r = await automationApi.backupStats()
-    bkStats.value = r.data || null
+    bkStats.value = normalizeBkStats(r?.data)
     return true
   } catch (e) {
-    bkStats.value = null
+    bkStats.value = { statusSummary: [], topFailures: [] }
     ElMessage.error(e?.message || '加载备份统计失败')
     return false
   } finally {
@@ -2856,13 +2872,13 @@ async function refreshBkStats() {
   const ok = await loadBkStats()
   if (!ok) return
   if (hasBkStatsData.value) ElMessage.success('备份统计数据已刷新')
-  else ElMessage.warning('查询无结果')
+  else ElMessage.success('备份监控统计刷新完成，暂无数据')
 }
 async function loadRestores() {
   restoresLoading.value = true
   try {
     const r = await automationApi.restoreTasks()
-    restores.value = Array.isArray(r.data) ? [...r.data] : []
+    restores.value = normalizeBackupList(r?.data)
     return true
   } catch (e) {
     restores.value = []
@@ -2874,7 +2890,7 @@ async function loadRestores() {
 }
 async function refreshRestores() {
   const ok = await loadRestores()
-  showBackupLoadResult(ok, restores.value.length, '恢复任务')
+  showBackupRefreshResult(ok, restores.value.length, '恢复任务')
 }
 function openBkPolicyDlg(row) {
   if(row) Object.assign(bkPolicyForm,{policyId:row.POLICY_ID,policyName:row.POLICY_NAME,instanceId:row.INSTANCE_ID,backupType:row.BACKUP_TYPE,storageType:row.STORAGE_TYPE,storagePath:row.STORAGE_PATH,retentionDays:row.RETENTION_DAYS,schedule:row.SCHEDULE,compress:!!row.COMPRESS,encrypt:!!row.ENCRYPT})
