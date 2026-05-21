@@ -278,6 +278,11 @@
 
       <!-- ══════ 4. SQL治理中心 ══════ -->
       <div v-if="activeModule==='sql'">
+        <div class="toolbar" style="margin-bottom:8px">
+          <el-button native-type="button" :loading="sqlRefreshing" @click.prevent.stop="refreshSqlGovernance">
+            <el-icon class="el-icon--left"><Refresh /></el-icon>刷新
+          </el-button>
+        </div>
         <!-- 健康概览：各实例平均得分 -->
         <div v-if="sqlHealthOverview.length" class="sql-health-bar">
           <span style="font-size:12px;color:var(--el-text-color-secondary);margin-right:8px">实例SQL健康度：</span>
@@ -291,16 +296,16 @@
           <el-tab-pane label="SQL即时审核" name="audit">
             <div class="sql-audit-panel">
               <div class="sql-audit-left">
-                <el-input v-model="auditSql" type="textarea" :rows="10" placeholder="输入 SQL 进行即时审核..." style="font-family:monospace"/>
+                <el-input v-model="auditSql" type="textarea" :rows="10" placeholder="输入 SQL；选择实例后将校验表是否存在、是否可执行并输出执行计划" style="font-family:monospace"/>
                 <div class="toolbar" style="margin-top:8px">
-                  <el-select v-model="auditInstanceId" placeholder="选择实例(可选)" clearable style="width:180px">
+                  <el-select v-model="auditInstanceId" placeholder="选择目标实例" clearable style="width:220px">
                     <el-option v-for="i in instances" :key="i.INSTANCE_ID" :label="i.INSTANCE_NAME" :value="i.INSTANCE_ID"/>
                   </el-select>
                   <el-button type="primary" :loading="auditLoading" @click="runSqlAudit">立即审核</el-button>
                   <el-button @click="auditSql='';auditResult=null">清空</el-button>
                 </div>
               </div>
-              <div class="sql-audit-right" v-if="auditResult">
+              <div class="sql-audit-right sql-audit-right-wide" v-if="auditResult">
                 <div class="score-ring" :class="scoreClass(auditResult.score)">
                   <div class="score-num">{{ auditResult.score }}</div>
                   <div class="score-label">SQL评分</div>
@@ -312,17 +317,57 @@
                     <span><strong>[{{iss.severity}}]</strong> {{iss.message}}</span>
                   </div>
                 </div>
+                <el-alert v-else-if="auditResult.hints?.length" type="success" :closable="false"
+                  title="未发现规则违规，请留意以下优化建议" show-icon style="margin-bottom:8px"/>
                 <el-empty v-else description="无违规，SQL质量良好 ✓" :image-size="60"/>
+                <!-- 实例级校验 -->
+                <template v-if="auditResult.instanceCheck">
+                  <el-divider content-position="left" style="margin:12px 0 8px">实例校验</el-divider>
+                  <div class="inst-check-meta">
+                    <span>{{ auditResult.instanceCheck.instanceName || ('#'+auditResult.instanceCheck.instanceId) }}</span>
+                    <el-tag size="small" type="info">{{ auditResult.instanceCheck.dbType }}</el-tag>
+                    <el-tag size="small" :type="auditResult.instanceCheck.connected?'success':'danger'">
+                      {{ auditResult.instanceCheck.connected ? '已连接' : '连接失败' }}
+                    </el-tag>
+                    <el-tag v-if="auditResult.instanceCheck.executable!=null" size="small"
+                      :type="auditResult.instanceCheck.executable?'success':'danger'">
+                      {{ auditResult.instanceCheck.executable ? '可执行' : '不可执行' }}
+                    </el-tag>
+                  </div>
+                  <div v-if="auditResult.instanceCheck.executeMessage" class="inst-check-msg">
+                    {{ auditResult.instanceCheck.executeMessage }}
+                  </div>
+                  <div v-if="auditResult.instanceCheck.tableNote" class="inst-check-msg">{{ auditResult.instanceCheck.tableNote }}</div>
+                  <div v-if="auditResult.instanceCheck.tables?.length" class="inst-table-list">
+                    <div v-for="(t,ti) in auditResult.instanceCheck.tables" :key="ti" class="inst-table-row">
+                      <el-tag size="small" :type="t.exists?'success':'danger'">{{ t.exists ? '存在' : '缺失' }}</el-tag>
+                      <span>{{ t.schema ? t.schema+'.' : '' }}{{ t.name }}</span>
+                      <span class="inst-table-hint">{{ t.message }}</span>
+                    </div>
+                  </div>
+                  <div v-if="auditResult.instanceCheck.explainPlan" class="inst-explain-wrap">
+                    <div class="inst-explain-title">执行计划</div>
+                    <pre class="sql-pre inst-explain-pre">{{ auditResult.instanceCheck.explainPlan }}</pre>
+                  </div>
+                </template>
+                <el-alert v-else-if="!auditInstanceId" type="info" :closable="false" style="margin-top:8px"
+                  title="选择实例后可校验表是否存在、SQL是否可执行并输出对应库类型的执行计划" show-icon/>
                 <!-- 优化建议 -->
                 <div v-if="auditResult.hints?.length" style="margin-top:8px">
                   <div style="font-size:12px;color:var(--el-text-color-secondary);margin-bottom:4px">优化建议</div>
                   <div v-for="(h,i) in auditResult.hints" :key="i" class="audit-hint">💡 {{h}}</div>
                 </div>
-                <!-- 高分SQL推送发布 -->
-                <el-button v-if="auditResult.score>=85 && auditInstanceId" type="success" size="small"
+                <el-alert v-if="auditResult.instanceCheck?.fullScanDetected" type="warning" :closable="false"
+                  title="执行计划含全表扫描，推送后将自动附带优化建议至发布审核" show-icon style="margin-top:8px"/>
+                <!-- 低/中风险可推送发布（与后端一致，不再强制 score>=85） -->
+                <el-button
+                  v-if="auditResult && auditInstanceId && canPushAuditToPublish(auditResult)"
+                  type="success" size="small" :disabled="!lastAuditId"
                   style="margin-top:12px" @click="pushAuditToPublish">
                   一键推送至发布流程 →
                 </el-button>
+                <div v-if="auditResult && auditInstanceId && canPushAuditToPublish(auditResult) && !lastAuditId"
+                  style="font-size:11px;color:#e6a23c;margin-top:4px">审核记录未保存，请重新点击「立即审核」</div>
               </div>
             </div>
           </el-tab-pane>
@@ -342,7 +387,9 @@
                 <el-option label="✅ 已确认" value="CONFIRMED"/>
                 <el-option label="🚫 已忽略" value="IGNORED"/>
               </el-select>
-              <el-button @click="loadAuditHistory" :icon="Refresh">刷新</el-button>
+              <el-button native-type="button" :loading="auditHistoryLoading" @click.prevent.stop="refreshAuditHistory">
+                <el-icon class="el-icon--left"><Refresh /></el-icon>刷新
+              </el-button>
             </div>
             <el-alert type="info" :closable="false" style="margin-bottom:10px"
               title="SQL审查完成后需经人工审核确认：点击「查看/审核」可查看完整SQL与问题清单，确认有效后方可推送发布流程" show-icon/>
@@ -384,7 +431,11 @@
           </el-tab-pane>
 
           <el-tab-pane label="评分维度配置" name="scoreConfig">
-            <div class="toolbar"><el-button @click="loadScoreConfig" :icon="Refresh">刷新</el-button></div>
+            <div class="toolbar">
+              <el-button native-type="button" :loading="sqlScoreConfigLoading" @click.prevent.stop="refreshScoreConfig">
+                <el-icon class="el-icon--left"><Refresh /></el-icon>刷新
+              </el-button>
+            </div>
             <el-table :data="scoreConfig" size="small" stripe>
               <el-table-column prop="DIMENSION" label="评分维度" width="120"/>
               <el-table-column prop="DESCRIPTION" label="说明" min-width="160"/>
@@ -399,7 +450,9 @@
 
           <el-tab-pane label="SQL基线管理" name="baseline">
             <div class="toolbar">
-              <el-button @click="loadBaselines" :icon="Refresh">刷新</el-button>
+              <el-button native-type="button" :loading="sqlBaselinesLoading" @click.prevent.stop="refreshSqlBaselines">
+                <el-icon class="el-icon--left"><Refresh /></el-icon>刷新
+              </el-button>
               <el-button v-if="canMutate" type="primary" @click="openBaselineDlg()">手动固化基线</el-button>
               <el-button v-if="canMutate" type="warning" :loading="regressionLoading" @click="runRegression">执行回归分析</el-button>
               <el-alert type="info" :closable="false" style="margin-left:8px" title="全量发布成功后，低风险SQL自动进入CANDIDATE状态，DBA确认后固化为ACTIVE" show-icon/>
@@ -1522,6 +1575,10 @@ const regressionLoading = ref(false)
 const baselineDlgVisible = ref(false)
 const baselineForm = reactive({sqlHash:'',sqlText:'',instanceId:null,baselineType:'FIXED'})
 const sqlHealthOverview = ref([])
+const sqlRefreshing = ref(false)
+const auditHistoryLoading = ref(false)
+const sqlScoreConfigLoading = ref(false)
+const sqlBaselinesLoading = ref(false)
 const slowQueryInstanceId = ref(null)
 const importingSlowQuery = ref(false)
 const lastAuditId = ref(null)
@@ -1627,7 +1684,7 @@ function switchModule(key) {
   if (key==='inspect') { loadScripts(); loadTasks(); loadInspectTemplates(); loadAllInspectReports() }
   if (key==='fault') { loadFaultPolicies(); loadFaultLogs(); loadFaultDashboard() }
   if (key==='publish') { loadTickets(); loadDdlRules() }
-  if (key==='sql') { loadAuditHistory(); loadScoreConfig(); loadBaselines(); loadRegressions(); loadSqlHealthOverview() }
+  if (key==='sql') { auditResult.value = null; lastAuditId.value = null; loadAuditHistory(); loadScoreConfig(); loadBaselines(); loadRegressions(); loadSqlHealthOverview() }
   if (key==='ha') { loadTopologies(); loadSwitches(); loadDrLinks(); loadHaDashboard() }
   if (key==='capacity') { loadSnapshots(); loadCostAnalysis() }
   if (key==='backup') { loadBackupPolicies(); loadBkRecords(); loadBkStats(); loadRestores() }
@@ -2162,25 +2219,63 @@ async function saveDdlRule() {
 
 // ── SQL GOVERNANCE ─────────────────────────────────────────
 async function loadSqlHealthOverview() {
-  const r = await automationApi.sqlHealthOverview().catch(()=>null)
-  if(r?.data) sqlHealthOverview.value = r.data
+  try {
+    const r = await automationApi.sqlHealthOverview()
+    sqlHealthOverview.value = Array.isArray(r?.data) ? [...r.data] : []
+    return true
+  } catch (e) {
+    sqlHealthOverview.value = []
+    ElMessage.error(e?.message || '加载实例SQL健康度失败')
+    return false
+  }
 }
+async function refreshSqlGovernance() {
+  sqlRefreshing.value = true
+  let ok = true
+  try {
+    if ((await loadSqlHealthOverview()) === false) ok = false
+    if (sqlTab.value === 'auditHistory') {
+      if ((await loadAuditHistory()) === false) ok = false
+    } else if (sqlTab.value === 'scoreConfig') {
+      if ((await loadScoreConfig()) === false) ok = false
+    } else if (sqlTab.value === 'baseline') {
+      if ((await loadBaselines()) === false || (await loadRegressions()) === false) ok = false
+    }
+    if (ok) ElMessage.success('SQL治理数据已刷新')
+  } finally {
+    sqlRefreshing.value = false
+  }
+}
+/** 是否允许一键推送（与后端一致：仅 LOW/MEDIUM） */
+function canPushAuditToPublish(result) {
+  return result && ['LOW', 'MEDIUM'].includes(result.risk)
+}
+
 async function runSqlAudit() {
   if(!auditSql.value.trim()) return ElMessage.warning('请输入SQL')
-  auditLoading.value=true; auditResult.value=null
+  if(!auditInstanceId.value) return ElMessage.warning('请先选择目标实例，以便校验表存在性、可执行性与执行计划')
+  auditLoading.value=true; auditResult.value=null; lastAuditId.value=null
   try {
-    const r = await automationApi.sqlAudit({sql:auditSql.value,instanceId:auditInstanceId.value})
-    auditResult.value=r.data; lastAuditId.value=r.data?.auditId
-  }
-  catch {} finally { auditLoading.value=false }
+    const r = await automationApi.sqlAudit({ sql: auditSql.value, instanceId: auditInstanceId.value })
+    auditResult.value = r.data
+    lastAuditId.value = r.data?.auditId
+    if (r.data?.instanceCheck?.connected) ElMessage.success('审核完成（已连接目标库并完成实例级校验）')
+    else if (r.data?.instanceCheck) ElMessage.warning(r.data.instanceCheck.connectionError || '实例连接失败，请检查 CMDB 连接信息')
+  } catch (e) {
+    ElMessage.error(e?.message || 'SQL 审核失败')
+  } finally { auditLoading.value=false }
 }
 async function pushAuditToPublish() {
-  if(!lastAuditId.value) return ElMessage.warning('请先执行审查')
+  if(!lastAuditId.value) return ElMessage.warning('审查记录未保存，请重新点击「立即审核」后再推送')
+  if(!auditInstanceId.value) return ElMessage.warning('请先选择实例')
+  if(!canPushAuditToPublish(auditResult.value)) return ElMessage.warning('仅 LOW/MEDIUM 风险可推送发布')
   saving.value=true
   try {
-    const r = await automationApi.pushAuditToPublish(lastAuditId.value)
-    ElMessage.success(`已推送至发布流程，工单号: ${r.data?.ticketNo}`)
-  } catch {} finally { saving.value=false }
+    const r = await automationApi.pushAuditToPublish(lastAuditId.value, { instanceId: auditInstanceId.value })
+    ElMessage.success(r.msg || `已推送至发布流程，工单号: ${r.data?.ticketNo}`)
+  } catch (e) {
+    ElMessage.error(e?.message || '推送失败')
+  } finally { saving.value=false }
 }
 async function pushAuditRecordToPublish(row) {
   saving.value=true
@@ -2240,20 +2335,69 @@ async function loadAuditHistory() {
   if(auditHistFilter.riskLevel)            p.riskLevel    = auditHistFilter.riskLevel
   if(auditHistFilter.source)               p.source       = auditHistFilter.source
   if(auditReviewFilter.reviewStatus)       p.reviewStatus = auditReviewFilter.reviewStatus
-  const r = await automationApi.sqlAuditRecords(p).catch(()=>({data:[]}))
-  auditHistory.value = r.data||[]
+  auditHistoryLoading.value = true
+  try {
+    const r = await automationApi.sqlAuditRecords(p)
+    auditHistory.value = Array.isArray(r?.data) ? [...r.data] : []
+    return true
+  } catch (e) {
+    auditHistory.value = []
+    ElMessage.error(e?.message || '加载审核历史失败')
+    return false
+  } finally {
+    auditHistoryLoading.value = false
+  }
+}
+async function refreshAuditHistory() {
+  const ok = await loadAuditHistory()
+  if (ok) ElMessage.success('审核历史已刷新')
 }
 async function loadScoreConfig() {
-  const r = await automationApi.sqlScoreConfig().catch(()=>({data:[]}))
-  scoreConfig.value = r.data||[]
+  sqlScoreConfigLoading.value = true
+  try {
+    const r = await automationApi.sqlScoreConfig()
+    scoreConfig.value = Array.isArray(r?.data) ? [...r.data] : []
+    return true
+  } catch (e) {
+    scoreConfig.value = []
+    ElMessage.error(e?.message || '加载评分配置失败')
+    return false
+  } finally {
+    sqlScoreConfigLoading.value = false
+  }
+}
+async function refreshScoreConfig() {
+  const ok = await loadScoreConfig()
+  if (ok) ElMessage.success('评分配置已刷新')
 }
 async function updateScoreWeight(row) {
   await automationApi.updateSqlScoreConfig(row.CONFIG_ID,{weight:row.WEIGHT}).catch(()=>{})
   ElMessage.success('权重已更新')
 }
-async function loadBaselines() {
-  const r = await automationApi.sqlBaselines().catch(()=>({data:[]}))
-  baselines.value = r.data||[]
+async function loadBaselines(opts = {}) {
+  if (!opts.silent) sqlBaselinesLoading.value = true
+  try {
+    const r = await automationApi.sqlBaselines()
+    baselines.value = Array.isArray(r?.data) ? [...r.data] : []
+    return true
+  } catch (e) {
+    baselines.value = []
+    ElMessage.error(e?.message || '加载SQL基线失败')
+    return false
+  } finally {
+    if (!opts.silent) sqlBaselinesLoading.value = false
+  }
+}
+async function refreshSqlBaselines() {
+  sqlBaselinesLoading.value = true
+  let ok = true
+  try {
+    if ((await loadBaselines({ silent: true })) === false) ok = false
+    if ((await loadRegressions()) === false) ok = false
+    if (ok) ElMessage.success('基线与回归结果已刷新')
+  } finally {
+    sqlBaselinesLoading.value = false
+  }
 }
 async function activateBaseline(row) {
   await ElMessageBox.confirm(`确认激活基线 [${row.SQL_HASH?.slice(0,8)}...]，状态将从 CANDIDATE 变为 ACTIVE？`,'确认',{type:'info'}).catch(()=>{throw ''})
@@ -2261,8 +2405,15 @@ async function activateBaseline(row) {
   ElMessage.success('基线已激活'); loadBaselines()
 }
 async function loadRegressions() {
-  const r = await automationApi.sqlRegressions().catch(()=>({data:[]}))
-  regressions.value = r.data||[]
+  try {
+    const r = await automationApi.sqlRegressions()
+    regressions.value = Array.isArray(r?.data) ? [...r.data] : []
+    return true
+  } catch (e) {
+    regressions.value = []
+    ElMessage.error(e?.message || '加载回归分析结果失败')
+    return false
+  }
 }
 function openBaselineDlg() { Object.assign(baselineForm,{sqlHash:'',sqlText:'',instanceId:null,baselineType:'FIXED'}); baselineDlgVisible.value=true }
 async function saveBaseline() {
@@ -2483,6 +2634,15 @@ onMounted(async () => {
 .sql-audit-panel { display:flex; gap:16px; align-items:flex-start }
 .sql-audit-left  { flex:1; min-width:0 }
 .sql-audit-right { width:220px; display:flex; flex-direction:column; align-items:center; background:#fff; border:1px solid #eee; border-radius:8px; padding:16px }
+.sql-audit-right-wide { width:min(420px, 42vw); align-items:stretch; max-height:calc(100vh - 220px); overflow-y:auto }
+.inst-check-meta { display:flex; flex-wrap:wrap; gap:6px; align-items:center; font-size:12px; margin-bottom:6px }
+.inst-check-msg { font-size:12px; color:#909399; margin-bottom:6px; line-height:1.4 }
+.inst-table-list { width:100%; margin-bottom:8px }
+.inst-table-row { display:flex; flex-wrap:wrap; gap:6px; align-items:center; font-size:12px; margin:4px 0 }
+.inst-table-hint { color:#909399; font-size:11px }
+.inst-explain-wrap { width:100%; margin-top:8px }
+.inst-explain-title { font-size:12px; font-weight:600; color:#606266; margin-bottom:4px }
+.inst-explain-pre { max-height:220px; font-size:11px; margin:0; text-align:left; width:100% }
 .score-ring { width:100px; height:100px; border-radius:50%; display:flex; flex-direction:column; align-items:center; justify-content:center; border:6px solid; margin-bottom:8px }
 .score-ring.text-success { border-color:#67c23a; color:#67c23a }
 .score-ring.text-warning { border-color:#e6a23c; color:#e6a23c }

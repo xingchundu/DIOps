@@ -14,6 +14,13 @@ const { getSchedulerStatusPayload } = require('../services/automationScheduler')
 const { runInspectTaskById } = require('../services/inspectTaskRun');
 const { buildGenericInspectDocxBuffer } = require('../services/inspectGenericReportDocx');
 const { getInspectReportsRoot, detectPython } = require('../services/inspectPythonDocxRunner');
+const {
+  runInstanceSqlAudit,
+  mergeInstanceCheckIntoAudit,
+  sanitizeInstanceCheck,
+  toPlainJson,
+  buildPublishReviewResult,
+} = require('../services/sqlGovernanceInstanceCheck');
 
 router.use(authMiddleware);
 
@@ -357,6 +364,18 @@ function sqlHash(sql) {
   return crypto.createHash('sha256').update(sql.trim().replace(/\s+/g,' ')).digest('hex').substring(0,32);
 }
 
+/** 获取刚写入的审核记录 ID */
+async function fetchLatestAuditId(hash, userId, instanceId) {
+  const binds = [hash, userId];
+  let sql = `SELECT MAX(AUDIT_ID) AID FROM SQL_AUDIT_RECORD WHERE SQL_HASH=:1 AND SUBMITTED_BY=:2`;
+  if (instanceId) {
+    sql += ` AND INSTANCE_ID=:3`;
+    binds.push(instanceId);
+  }
+  const idRes = await db.execute(sql, binds);
+  return idRes.rows[0]?.AID ?? null;
+}
+
 /** 从数据库动态加载审核规则（30s TTL 内存缓存） */
 let _auditRulesCache = { ts: 0, rules: [] };
 async function loadDdlRules() {
@@ -368,8 +387,46 @@ async function loadDdlRules() {
   return _auditRulesCache.rules;
 }
 
+/** 校验输入是否为可识别的 SQL 语句（即时审核前置检查） */
+function validateSqlInput(sql) {
+  const trimmed = (sql || '').trim();
+  if (!trimmed) {
+    return [{ code: 'EMPTY_SQL', severity: 'ERROR', message: 'SQL 内容不能为空' }];
+  }
+  const stripped = trimmed
+    .replace(/\/\*[\s\S]*?\*\//g, ' ')
+    .replace(/--[^\n\r]*/g, ' ')
+    .trim();
+  if (!stripped) {
+    return [{ code: 'EMPTY_SQL', severity: 'ERROR', message: 'SQL 内容不能只包含注释' }];
+  }
+  const SQL_STMT_RE = /^(?:SELECT|INSERT|UPDATE|DELETE|MERGE|WITH|CREATE|ALTER|DROP|TRUNCATE|EXPLAIN|CALL|GRANT|REVOKE|SET|BEGIN|COMMIT|ROLLBACK|DECLARE|EXEC(?:UTE)?|REPLACE|ANALYZE|DESCRIBE|DESC|SHOW|USE|LOAD|LOCK|UNLOCK|RENAME)\b/i;
+  if (!SQL_STMT_RE.test(stripped)) {
+    return [{ code: 'INVALID_SQL', severity: 'CRITICAL', message: '输入内容不是有效的 SQL 语句，请以 SELECT / INSERT / UPDATE 等关键字开头' }];
+  }
+  return [];
+}
+
+function calcSqlAuditScore(issues) {
+  return Math.max(0, 100
+    - issues.filter(i => i.severity === 'CRITICAL').length * 40
+    - issues.filter(i => i.severity === 'ERROR').length * 20
+    - issues.filter(i => i.severity === 'WARNING').length * 8
+    - issues.filter(i => i.severity === 'INFO').length * 2);
+}
+
+function calcSqlAuditRisk(score) {
+  return score >= 90 ? 'LOW' : score >= 70 ? 'MEDIUM' : score >= 50 ? 'HIGH' : 'CRITICAL';
+}
+
 /** SQL 审核核心（基于动态规则表 + 内置兜底规则），返回 issues/score/risk/hints */
 async function sqlAuditCheckDynamic(sql) {
+  const inputIssues = validateSqlInput(sql);
+  if (inputIssues.length) {
+    const score = calcSqlAuditScore(inputIssues);
+    return { issues: inputIssues, score, risk: calcSqlAuditRisk(score), hints: [] };
+  }
+
   const dynamicRules = await loadDdlRules();
   // 内置兜底规则（当规则表为空时生效）
   const builtinRules = [
@@ -400,13 +457,8 @@ async function sqlAuditCheckDynamic(sql) {
   if (/LIKE\s+'%/i.test(sql)) hints.push('前缀 % 的 LIKE 查询无法使用索引，考虑全文检索');
   if (/ORDER\s+BY\s+\d+/i.test(sql)) hints.push('ORDER BY 列位序写法可读性差，建议使用列名');
 
-  const score = Math.max(0, 100
-    - issues.filter(i => i.severity === 'CRITICAL').length * 40
-    - issues.filter(i => i.severity === 'ERROR').length * 20
-    - issues.filter(i => i.severity === 'WARNING').length * 8
-    - issues.filter(i => i.severity === 'INFO').length * 2);
-  const risk = score >= 90 ? 'LOW' : score >= 70 ? 'MEDIUM' : score >= 50 ? 'HIGH' : 'CRITICAL';
-  return { issues, score, risk, hints };
+  const score = calcSqlAuditScore(issues);
+  return { issues, score, risk: calcSqlAuditRisk(score), hints };
 }
 
 /** 从监控采样表获取实例最新指标快照（用于故障条件判断） */
@@ -1066,36 +1118,102 @@ router.get('/publish/pipeline-overview', async (req, res) => {
 router.post('/sql-governance/audit', async (req, res) => {
   const { sql, instanceId } = req.body;
   if (!sql) return res.json({ code:400, msg:'sql 必填' });
-  const result = await sqlAuditCheckDynamic(sql);
+  let result = await sqlAuditCheckDynamic(sql);
+  let instanceCheck = null;
+  if (instanceId) {
+    try {
+      instanceCheck = await runInstanceSqlAudit(Number(instanceId), sql);
+      result = mergeInstanceCheckIntoAudit(result, instanceCheck, calcSqlAuditScore, calcSqlAuditRisk);
+    } catch (e) {
+      instanceCheck = sanitizeInstanceCheck({
+        instanceId: Number(instanceId),
+        connected: false,
+        connectionError: e.message || String(e),
+        tables: [],
+        executable: false,
+        executeMessage: e.message || String(e),
+        explainOk: false,
+        explainPlan: '',
+      });
+      result = mergeInstanceCheckIntoAudit(result, instanceCheck, calcSqlAuditScore, calcSqlAuditRisk);
+    }
+  }
+  instanceCheck = sanitizeInstanceCheck(result.instanceCheck || instanceCheck);
+  result.instanceCheck = instanceCheck;
   const hash = sqlHash(sql);
+  let auditId = null;
+  const auditPayload = toPlainJson({
+    issues: result.issues,
+    hints: result.hints,
+    score: result.score,
+    risk: result.risk,
+    instanceCheck,
+  });
+  const auditJson = JSON.stringify(auditPayload);
   try {
     await db.execute(
-      `INSERT INTO SQL_AUDIT_RECORD (INSTANCE_ID,SQL_TEXT,SQL_HASH,AUDIT_RESULT,SCORE,RISK_LEVEL,SUBMITTED_BY)
-       VALUES (:1,:2,:3,:4,:5,:6,:7)`,
-      [instanceId || null, sql, hash, JSON.stringify(result), result.score, result.risk, req.user.userId]
+      `INSERT INTO SQL_AUDIT_RECORD (INSTANCE_ID,SQL_TEXT,SQL_HASH,AUDIT_RESULT,SCORE,RISK_LEVEL,SOURCE,SUBMITTED_BY)
+       VALUES (:1,:2,:3,:4,:5,:6,'MANUAL',:7)`,
+      [instanceId || null, sql, hash, auditJson, result.score, result.risk, req.user.userId]
     );
-  } catch { /* 忽略写入异常，不影响审核结果返回 */ }
-  res.json({ code:200, data:{ score: result.score, risk: result.risk, issues: result.issues, hints: result.hints, hash } });
+    auditId = await fetchLatestAuditId(hash, req.user.userId, instanceId);
+  } catch {
+    /* 降级：无 SOURCE 列时重试写入 */
+    try {
+      await db.execute(
+        `INSERT INTO SQL_AUDIT_RECORD (INSTANCE_ID,SQL_TEXT,SQL_HASH,AUDIT_RESULT,SCORE,RISK_LEVEL,SUBMITTED_BY)
+         VALUES (:1,:2,:3,:4,:5,:6,:7)`,
+        [instanceId || null, sql, hash, auditJson, result.score, result.risk, req.user.userId]
+      );
+      auditId = await fetchLatestAuditId(hash, req.user.userId, instanceId);
+    } catch { /* 写入失败时 auditId 仍为 null */ }
+  }
+  res.json({
+    code: 200,
+    data: toPlainJson({
+      auditId,
+      score: result.score,
+      risk: result.risk,
+      issues: result.issues,
+      hints: result.hints,
+      hash,
+      instanceCheck,
+    }),
+  });
 });
 
 /** 审核历史记录（含来源标注：MANUAL / FAULT_AUTO / PUBLISH_PRE） */
 router.get('/sql-governance/audit/records', async (req, res) => {
   const { instanceId, riskLevel, source, reviewStatus } = req.query;
-  const binds = [];
-  let sql = `SELECT r.AUDIT_ID, r.INSTANCE_ID, r.SQL_HASH, r.SCORE, r.RISK_LEVEL,
-                    r.CREATED_AT, SUBSTR(r.SQL_TEXT,1,200) SQL_PREVIEW, r.SOURCE,
-                    r.REVIEW_STATUS, r.REVIEW_COMMENT, r.REVIEWED_AT,
-                    i.INSTANCE_NAME
-             FROM SQL_AUDIT_RECORD r
-             LEFT JOIN CMDB_INSTANCE i ON r.INSTANCE_ID = i.INSTANCE_ID
-             WHERE 1=1`;
-  if (instanceId)    { sql += ` AND r.INSTANCE_ID=:${binds.length+1}`;   binds.push(instanceId); }
-  if (riskLevel)     { sql += ` AND r.RISK_LEVEL=:${binds.length+1}`;    binds.push(riskLevel); }
-  if (source)        { sql += ` AND r.SOURCE=:${binds.length+1}`;        binds.push(source); }
-  if (reviewStatus)  { sql += ` AND r.REVIEW_STATUS=:${binds.length+1}`; binds.push(reviewStatus); }
-  sql += ` ORDER BY r.CREATED_AT DESC FETCH NEXT 100 ROWS ONLY`;
-  try { const r = await db.execute(sql, binds); res.json({ code:200, data:r.rows }); }
-  catch (e) { res.json({ code:500, msg:e.message }); }
+  const runQuery = async (extendedCols) => {
+    const binds = [];
+    let sql = extendedCols
+      ? `SELECT r.AUDIT_ID, r.INSTANCE_ID, r.SQL_HASH, r.SCORE, r.RISK_LEVEL,
+                r.CREATED_AT, SUBSTR(r.SQL_TEXT,1,200) SQL_PREVIEW, r.SOURCE,
+                r.REVIEW_STATUS, r.REVIEW_COMMENT, r.REVIEWED_AT, i.INSTANCE_NAME`
+      : `SELECT r.AUDIT_ID, r.INSTANCE_ID, r.SQL_HASH, r.SCORE, r.RISK_LEVEL,
+                r.CREATED_AT, SUBSTR(r.SQL_TEXT,1,200) SQL_PREVIEW,
+                CAST('MANUAL' AS VARCHAR2(32)) SOURCE,
+                CAST('PENDING' AS VARCHAR2(16)) REVIEW_STATUS,
+                CAST(NULL AS VARCHAR2(1000)) REVIEW_COMMENT,
+                CAST(NULL AS TIMESTAMP) REVIEWED_AT, i.INSTANCE_NAME`;
+    sql += ` FROM SQL_AUDIT_RECORD r LEFT JOIN CMDB_INSTANCE i ON r.INSTANCE_ID = i.INSTANCE_ID WHERE 1=1`;
+    if (instanceId)    { sql += ` AND r.INSTANCE_ID=:${binds.length+1}`;   binds.push(instanceId); }
+    if (riskLevel)     { sql += ` AND r.RISK_LEVEL=:${binds.length+1}`;    binds.push(riskLevel); }
+    if (source && extendedCols)        { sql += ` AND r.SOURCE=:${binds.length+1}`;        binds.push(source); }
+    if (reviewStatus && extendedCols)  { sql += ` AND r.REVIEW_STATUS=:${binds.length+1}`; binds.push(reviewStatus); }
+    sql += ` ORDER BY r.CREATED_AT DESC FETCH NEXT 100 ROWS ONLY`;
+    return db.execute(sql, binds);
+  };
+  try {
+    let r;
+    try { r = await runQuery(true); }
+    catch (e) {
+      if (!oraMissingColumn(e, ['REVIEW_STATUS', 'SOURCE', 'REVIEW_COMMENT', 'REVIEWED_AT'])) throw e;
+      r = await runQuery(false);
+    }
+    res.json({ code:200, data: toPlainJson(r.rows) });
+  } catch (e) { res.json({ code:500, msg:e.message }); }
 });
 
 /** 获取单条审核记录完整详情（含全文 SQL + 审核结果 JSON）*/
@@ -1109,9 +1227,11 @@ router.get('/sql-governance/audit/:auditId', async (req, res) => {
       [req.params.auditId]
     );
     if (!r.rows.length) return res.json({ code:404, msg:'记录不存在' });
-    const row = r.rows[0];
-    // 解析 AUDIT_RESULT JSON
-    try { row.AUDIT_RESULT_JSON = JSON.parse(row.AUDIT_RESULT); } catch { row.AUDIT_RESULT_JSON = null; }
+    const row = toPlainJson(r.rows[0]);
+    try {
+      const parsed = typeof row.AUDIT_RESULT === 'string' ? JSON.parse(row.AUDIT_RESULT) : row.AUDIT_RESULT;
+      row.AUDIT_RESULT_JSON = toPlainJson(parsed);
+    } catch { row.AUDIT_RESULT_JSON = null; }
     res.json({ code:200, data: row });
   } catch (e) { res.json({ code:500, msg:e.message }); }
 });
@@ -1199,24 +1319,37 @@ router.post('/sql-governance/audit/:auditId/push-to-publish', async (req, res) =
     const record = ar.rows[0];
     if (!['LOW','MEDIUM'].includes(record.RISK_LEVEL))
       return res.json({ code:400, msg:`风险等级 ${record.RISK_LEVEL} 不允许直接推送发布，请先优化 SQL` });
+    const reviewResult = buildPublishReviewResult(record.AUDIT_RESULT);
+    let reviewJson;
+    try { reviewJson = JSON.parse(reviewResult); } catch { reviewJson = {}; }
+    const fullScan = !!reviewJson.fullScanDetected;
     const ticketNo = genTicketNo();
+    const ticketTitle = title || (fullScan
+      ? `[SQL治理·全表扫描] ${new Date().toISOString().split('T')[0]}`
+      : `[SQL治理推送] ${new Date().toISOString().split('T')[0]}`);
     await db.execute(
       `INSERT INTO PUBLISH_TICKET
          (TICKET_NO,TITLE,TICKET_TYPE,INSTANCE_ID,SQL_CONTENT,RISK_LEVEL,REVIEW_RESULT,
           GOVERNANCE_AUDIT_ID,ENV,STATUS,SUBMITTED_BY)
        VALUES (:1,:2,:3,:4,:5,:6,:7,:8,'PROD','REVIEWING',:9)`,
-      [ticketNo, title || `[SQL治理推送] ${new Date().toISOString().split('T')[0]}`,
+      [ticketNo, ticketTitle,
        ticketType || 'SQL_PUBLISH', instanceId || record.INSTANCE_ID, record.SQL_TEXT,
-       record.RISK_LEVEL, record.AUDIT_RESULT, record.AUDIT_ID, req.user.userId]
+       record.RISK_LEVEL, reviewResult, record.AUDIT_ID, req.user.userId]
     );
     await automationLog(req, 'PUBLISH', null, 'PUSH_FROM_GOVERNANCE', 'SUCCESS', ticketNo);
-    res.json({ code:200, msg:'已推送至发布工单审核流程', data:{ ticketNo } });
+    res.json({
+      code: 200,
+      msg: fullScan
+        ? '已推送至发布流程（已附带全表扫描优化建议，供自动发布审核参考）'
+        : '已推送至发布工单审核流程',
+      data: { ticketNo, fullScanDetected: fullScan },
+    });
   } catch (e) { res.json({ code:500, msg:e.message }); }
 });
 
 /** 评分维度配置 */
 router.get('/sql-governance/score-config', async (req, res) => {
-  try { const r = await db.execute(`SELECT * FROM SQL_SCORE_CONFIG ORDER BY CONFIG_ID`, []); res.json({ code:200, data:r.rows }); }
+  try { const r = await db.execute(`SELECT * FROM SQL_SCORE_CONFIG ORDER BY CONFIG_ID`, []); res.json({ code:200, data: toPlainJson(r.rows) }); }
   catch (e) { res.json({ code:500, msg:e.message }); }
 });
 
@@ -1241,7 +1374,7 @@ router.get('/sql-governance/baselines', async (req, res) => {
   if (instanceId) { sql += ` AND b.INSTANCE_ID=:${binds.length+1}`; binds.push(instanceId); }
   if (status)     { sql += ` AND b.STATUS=:${binds.length+1}`;      binds.push(status); }
   sql += ` ORDER BY b.CREATED_AT DESC`;
-  try { const r = await db.execute(sql, binds); res.json({ code:200, data:r.rows }); }
+  try { const r = await db.execute(sql, binds); res.json({ code:200, data: toPlainJson(r.rows) }); }
   catch (e) { res.json({ code:500, msg:e.message }); }
 });
 
@@ -1332,7 +1465,7 @@ router.get('/sql-governance/regressions', async (req, res) => {
              WHERE 1=1`;
   if (instanceId) { sql += ` AND r.INSTANCE_ID=:1`; binds.push(instanceId); }
   sql += ` ORDER BY r.CHECKED_AT DESC FETCH NEXT 50 ROWS ONLY`;
-  try { const r = await db.execute(sql, binds); res.json({ code:200, data:r.rows }); }
+  try { const r = await db.execute(sql, binds); res.json({ code:200, data: toPlainJson(r.rows) }); }
   catch (e) { res.json({ code:500, msg:e.message }); }
 });
 
@@ -1351,7 +1484,7 @@ router.get('/sql-governance/health-overview', async (req, res) => {
        GROUP BY r.INSTANCE_ID, i.INSTANCE_NAME
        ORDER BY AVG_SCORE ASC FETCH NEXT 20 ROWS ONLY`, []
     );
-    res.json({ code:200, data:r.rows });
+    res.json({ code:200, data: toPlainJson(r.rows) });
   } catch (e) { res.json({ code:500, msg:e.message }); }
 });
 
