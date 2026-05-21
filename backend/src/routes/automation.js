@@ -977,15 +977,53 @@ router.post('/publish/tickets/:id/review', adminDba, async (req, res) => {
   } catch (e) { res.json({ code:500, msg:e.message }); }
 });
 
+/** 读取工单 SQL 文本（避免 CLOB Lob 导致 sqlHash/substring 失败） */
+async function publishTicketSqlText(val) {
+  if (val == null) return '';
+  if (typeof val === 'string') return val;
+  try {
+    if (typeof val.getData === 'function') return String(await val.getData());
+    if (typeof val.read === 'function') {
+      const chunks = [];
+      let off = 1;
+      const step = 32000;
+      while (true) {
+        const part = await val.read(off, step);
+        if (!part) break;
+        chunks.push(part);
+        if (part.length < step) break;
+        off += step;
+      }
+      return chunks.join('');
+    }
+  } catch { /* fall through */ }
+  return String(val);
+}
+
 /** 执行发布（支持灰度→全量两段式） */
 router.post('/publish/tickets/:id/execute', adminDbaOps, async (req, res) => {
   const { grayPercent } = req.body;
+  const ticketId = req.params.id;
   try {
-    const r = await db.execute(`SELECT * FROM PUBLISH_TICKET WHERE TICKET_ID=:1`, [req.params.id]);
+    const baseSel = `SELECT TICKET_ID, STATUS, GRAY_PERCENT, RISK_LEVEL, INSTANCE_ID,
+                            DBMS_LOB.SUBSTR(SQL_CONTENT, 4000, 1) AS SQL_CONTENT`;
+    let r;
+    try {
+      r = await db.execute(
+        `${baseSel}, NVL(ENV, 'PROD') AS ENV FROM PUBLISH_TICKET WHERE TICKET_ID=:1`,
+        [ticketId]
+      );
+    } catch (e) {
+      if (!oraMissingColumn(e, ['ENV'])) throw e;
+      r = await db.execute(
+        `${baseSel}, 'PROD' AS ENV FROM PUBLISH_TICKET WHERE TICKET_ID=:1`,
+        [ticketId]
+      );
+    }
     if (!r.rows.length) return res.json({ code:404, msg:'工单不存在' });
     const t = r.rows[0];
     if (!['APPROVED','GRAY_TESTING'].includes(t.STATUS))
-      return res.json({ code:400, msg:`当前状态 ${t.STATUS} 不可执行` });
+      return res.json({ code: 400, msg: `当前状态 ${t.STATUS} 不可执行` });
 
     const pct = grayPercent !== undefined ? Number(grayPercent) : (t.GRAY_PERCENT || 100);
     const isGray = pct < 100;
@@ -1002,25 +1040,26 @@ router.post('/publish/tickets/:id/execute', adminDbaOps, async (req, res) => {
     await db.execute(
       `UPDATE PUBLISH_TICKET SET STATUS=:1,GRAY_PERCENT=:2,EXEC_RESULT=:3,EXECUTED_BY=:4,EXECUTED_AT=SYSTIMESTAMP,UPDATED_AT=SYSTIMESTAMP
        WHERE TICKET_ID=:5`,
-      [newStatus, pct, JSON.stringify(execResult), req.user.userId, req.params.id]
+      [newStatus, pct, JSON.stringify(execResult), req.user.userId, ticketId]
     );
     await db.execute(
       `INSERT INTO PUBLISH_REVIEW (TICKET_ID,ACTION,"COMMENT",OPERATED_BY) VALUES (:1,'EXECUTE',:2,:3)`,
-      [req.params.id, `${isGray ? `灰度${pct}%` : '全量'}执行成功，耗时 ${execResult.durationMs}ms`, req.user.userId]
+      [ticketId, `${isGray ? `灰度${pct}%` : '全量'}执行成功，耗时 ${execResult.durationMs}ms`, req.user.userId]
     );
 
     // 全量发布成功后：将 SQL 推入基线候选，形成 SQL治理→发布→基线 闭环
     if (!isGray && t.RISK_LEVEL === 'LOW') {
-      const hVal = sqlHash(t.SQL_CONTENT || '');
+      const sqlText = await publishTicketSqlText(t.SQL_CONTENT);
+      const hVal = sqlHash(sqlText);
       await db.execute(
         `INSERT INTO SQL_BASELINE (SQL_HASH,SQL_TEXT,INSTANCE_ID,EXEC_PLAN,BASELINE_TYPE,STATUS,CREATED_BY)
          SELECT :1,:2,:3,'{}','PUBLISH_CAPTURE','CANDIDATE',:4
          FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM SQL_BASELINE WHERE SQL_HASH=:5)`,
-        [hVal, (t.SQL_CONTENT||'').substring(0,2000), t.INSTANCE_ID, req.user.userId, hVal]
+        [hVal, sqlText.substring(0, 2000), t.INSTANCE_ID, req.user.userId, hVal]
       ).catch(() => {});
     }
 
-    await automationLog(req, 'PUBLISH', Number(req.params.id), 'EXECUTE', newStatus, `gray=${pct}%`);
+    await automationLog(req, 'PUBLISH', Number(ticketId), 'EXECUTE', newStatus, `gray=${pct}%`);
     res.json({ code:200, msg: isGray ? `灰度 ${pct}% 发布成功` : '全量发布成功', data: execResult });
   } catch (e) { res.json({ code:500, msg:e.message }); }
 });
@@ -1216,20 +1255,56 @@ router.get('/sql-governance/audit/records', async (req, res) => {
   } catch (e) { res.json({ code:500, msg:e.message }); }
 });
 
-/** 获取单条审核记录完整详情（含全文 SQL + 审核结果 JSON）*/
-router.get('/sql-governance/audit/:auditId', async (req, res) => {
+/** CLOB → 字符串（审核详情；避免 DBMS_LOB.SUBSTR 超 VARCHAR2 上限触发 ORA-06502） */
+async function readAuditClob(val) {
+  if (val == null || val === '') return '';
+  if (typeof val === 'string') return val;
+  if (Buffer.isBuffer(val)) return val.toString('utf8');
   try {
-    const r = await db.execute(
-      `SELECT r.*, i.INSTANCE_NAME
+    if (typeof val.getData === 'function') return String(await val.getData());
+  } catch { /* ignore */ }
+  return String(val);
+}
+
+/** 获取单条审核记录完整详情（含全文 SQL + 审核结果 JSON） */
+router.get('/sql-governance/audit/:auditId', async (req, res) => {
+  const auditId = req.params.auditId;
+  const baseSql = `SELECT r.AUDIT_ID, r.INSTANCE_ID, r.SQL_HASH, r.SCORE, r.RISK_LEVEL, r.SOURCE,
+              r.REVIEW_STATUS, r.REVIEW_COMMENT, r.REVIEWED_BY, r.REVIEWED_AT, r.CREATED_AT, r.SUBMITTED_BY,
+              r.SQL_TEXT, r.AUDIT_RESULT, i.INSTANCE_NAME
        FROM SQL_AUDIT_RECORD r
        LEFT JOIN CMDB_INSTANCE i ON r.INSTANCE_ID = i.INSTANCE_ID
-       WHERE r.AUDIT_ID = :1`,
-      [req.params.auditId]
-    );
+       WHERE r.AUDIT_ID = :1`;
+  try {
+    let r;
+    try {
+      r = await db.execute(baseSql, [auditId], {
+        fetchInfo: {
+          SQL_TEXT: { type: oracledb.STRING, maxSize: 512 * 1024 },
+          AUDIT_RESULT: { type: oracledb.STRING, maxSize: 512 * 1024 },
+        },
+      });
+    } catch (e) {
+      if (!/ORA-06502|buffer too small/i.test(String(e.message))) throw e;
+      r = await db.execute(
+        `SELECT r.AUDIT_ID, r.INSTANCE_ID, r.SQL_HASH, r.SCORE, r.RISK_LEVEL, r.SOURCE,
+                r.REVIEW_STATUS, r.REVIEW_COMMENT, r.REVIEWED_BY, r.REVIEWED_AT, r.CREATED_AT, r.SUBMITTED_BY,
+                DBMS_LOB.SUBSTR(r.SQL_TEXT, 4000, 1) AS SQL_TEXT,
+                DBMS_LOB.SUBSTR(r.AUDIT_RESULT, 4000, 1) AS AUDIT_RESULT,
+                i.INSTANCE_NAME
+         FROM SQL_AUDIT_RECORD r
+         LEFT JOIN CMDB_INSTANCE i ON r.INSTANCE_ID = i.INSTANCE_ID
+         WHERE r.AUDIT_ID = :1`,
+        [auditId]
+      );
+    }
     if (!r.rows.length) return res.json({ code:404, msg:'记录不存在' });
     const row = toPlainJson(r.rows[0]);
+    row.SQL_TEXT = await readAuditClob(row.SQL_TEXT);
+    const auditResultStr = await readAuditClob(row.AUDIT_RESULT);
+    row.AUDIT_RESULT = auditResultStr;
     try {
-      const parsed = typeof row.AUDIT_RESULT === 'string' ? JSON.parse(row.AUDIT_RESULT) : row.AUDIT_RESULT;
+      const parsed = auditResultStr ? JSON.parse(auditResultStr) : null;
       row.AUDIT_RESULT_JSON = toPlainJson(parsed);
     } catch { row.AUDIT_RESULT_JSON = null; }
     res.json({ code:200, data: row });
@@ -1480,7 +1555,7 @@ router.get('/sql-governance/health-overview', async (req, res) => {
               MAX(r.CREATED_AT)                       LAST_AUDIT_AT
        FROM SQL_AUDIT_RECORD r
        LEFT JOIN CMDB_INSTANCE i ON r.INSTANCE_ID = i.INSTANCE_ID
-       WHERE r.CREATED_AT >= SYSDATE - 30
+       WHERE r.CREATED_AT >= SYSDATE - 30 AND r.INSTANCE_ID IS NOT NULL
        GROUP BY r.INSTANCE_ID, i.INSTANCE_NAME
        ORDER BY AVG_SCORE ASC FETCH NEXT 20 ROWS ONLY`, []
     );

@@ -284,12 +284,24 @@
           </el-button>
         </div>
         <!-- 健康概览：各实例平均得分 -->
-        <div v-if="sqlHealthOverview.length" class="sql-health-bar">
-          <span style="font-size:12px;color:var(--el-text-color-secondary);margin-right:8px">实例SQL健康度：</span>
-          <div v-for="h in sqlHealthOverview.slice(0,5)" :key="h.INSTANCE_ID" class="health-badge">
-            <span class="health-name">{{h.INSTANCE_NAME||'#'+h.INSTANCE_ID}}</span>
-            <el-progress :percentage="h.AVG_SCORE||0" :color="h.AVG_SCORE>=90?'#52c41a':h.AVG_SCORE>=70?'#faad14':'#ff4d4f'" :stroke-width="6" style="width:80px"/>
-            <span v-if="h.HIGH_RISK_CNT>0" style="color:#ff4d4f;font-size:11px;margin-left:4px">高风险{{h.HIGH_RISK_CNT}}条</span>
+        <div v-if="sqlHealthDisplay.length" class="sql-health-section">
+          <div class="sql-health-section-title">实例 SQL 健康度（近 30 天审核均值）</div>
+          <div class="sql-health-grid">
+            <div v-for="h in sqlHealthDisplay" :key="h.INSTANCE_ID" class="sql-health-card">
+              <div class="sql-health-card-head">
+                <span class="sql-health-inst-name" :title="healthInstanceLabel(h)">{{ healthInstanceLabel(h) }}</span>
+                <el-tag v-if="h.HIGH_RISK_CNT>0" type="danger" size="small" effect="plain">高风险 {{ h.HIGH_RISK_CNT }}</el-tag>
+                <el-tag v-else type="success" size="small" effect="plain">无高风险</el-tag>
+              </div>
+              <div class="sql-health-card-score" :class="scoreClass(h.AVG_SCORE)">{{ h.AVG_SCORE ?? '-' }}<span class="sql-health-unit">分</span></div>
+              <el-progress
+                :percentage="Number(h.AVG_SCORE)||0"
+                :color="h.AVG_SCORE>=90?'#52c41a':h.AVG_SCORE>=70?'#faad14':'#ff4d4f'"
+                :stroke-width="8"
+                :show-text="false"
+              />
+              <div class="sql-health-card-meta">审核 {{ h.TOTAL_AUDITS || 0 }} 条</div>
+            </div>
           </div>
         </div>
         <el-tabs v-model="sqlTab" type="card">
@@ -508,10 +520,12 @@
         <el-tabs v-model="haTab" type="card">
           <el-tab-pane label="HA拓扑管理" name="topologies">
             <div class="toolbar">
-              <el-button @click="loadTopologies" :icon="Refresh">刷新</el-button>
+              <el-button native-type="button" :loading="topologiesLoading" @click.prevent.stop="refreshTopologies">
+                <el-icon class="el-icon--left"><Refresh /></el-icon>刷新
+              </el-button>
               <el-button v-if="canMutate" type="primary" @click="openTopoDlg()">新建拓扑</el-button>
             </div>
-            <el-table :data="topologies" size="small" stripe>
+            <el-table v-loading="topologiesLoading" :data="topologies" size="small" stripe>
               <el-table-column prop="TOPO_NAME" label="拓扑名称" min-width="150"/>
               <el-table-column prop="HA_TYPE" label="类型" width="90"><template #default="{row}"><el-tag size="small" type="warning">{{row.HA_TYPE}}</el-tag></template></el-table-column>
               <el-table-column label="主节点" width="160">
@@ -553,9 +567,11 @@
               <el-select v-model="switchHistFilter.switchType" placeholder="切换类型" clearable style="width:120px" @change="loadSwitches()">
                 <el-option label="计划切换" value="PLANNED"/><el-option label="故障切换" value="FAILOVER"/><el-option label="演练" value="DRILL"/>
               </el-select>
-              <el-button @click="loadSwitches()" :icon="Refresh">刷新</el-button>
+              <el-button native-type="button" :loading="switchesLoading" @click.prevent.stop="refreshSwitches">
+                <el-icon class="el-icon--left"><Refresh /></el-icon>刷新
+              </el-button>
             </div>
-            <el-table :data="switches" size="small" stripe>
+            <el-table v-loading="switchesLoading" :data="switches" size="small" stripe>
               <el-table-column prop="TOPO_NAME" label="拓扑" min-width="130"/>
               <el-table-column prop="HA_TYPE" label="类型" width="80"/>
               <el-table-column prop="SWITCH_TYPE" label="切换类型" width="110"><template #default="{row}"><el-tag :type="switchTypeColor(row.SWITCH_TYPE)" size="small">{{switchTypeLabel(row.SWITCH_TYPE)}}</el-tag></template></el-table-column>
@@ -569,7 +585,9 @@
 
           <el-tab-pane label="容灾可视化" name="dr">
             <div class="toolbar">
-              <el-button @click="loadDrLinks" :icon="Refresh">刷新</el-button>
+              <el-button native-type="button" :loading="drLinksLoading" @click.prevent.stop="refreshDrLinks">
+                <el-icon class="el-icon--left"><Refresh /></el-icon>刷新
+              </el-button>
               <el-button v-if="canMutate" type="primary" @click="openDrLinkDlg()">添加容灾链路</el-button>
             </div>
             <div class="dr-visual">
@@ -597,7 +615,9 @@
                   <div class="dr-node-sub">{{link.TGT_NAME||'备实例'}}</div>
                 </div>
                 <div style="margin-left:16px;display:flex;flex-direction:column;gap:4px">
-                  <el-button v-if="canMutate" size="small" @click="refreshDrLink(link.LINK_ID)">刷新状态</el-button>
+                  <el-button v-if="canMutate" native-type="button" size="small"
+                    :loading="drLinkRefreshingId===link.LINK_ID"
+                    @click.prevent.stop="refreshDrLink(link.LINK_ID)">刷新状态</el-button>
                   <el-button v-if="canMutate && link.SOURCE_ID && link.TARGET_ID" size="small" type="warning"
                     :loading="drillingLink===link.LINK_ID" @click="doDrDrill(link)">容灾演练</el-button>
                   <div v-if="link.LAST_DRILL_AT" style="font-size:11px;color:var(--el-text-color-secondary)">
@@ -619,11 +639,13 @@
               <el-select v-model="capacityInstanceId" placeholder="选择实例" clearable style="width:180px">
                 <el-option v-for="i in instances" :key="i.INSTANCE_ID" :label="i.INSTANCE_NAME" :value="i.INSTANCE_ID"/>
               </el-select>
-              <el-button @click="loadSnapshots" :icon="Refresh">查询</el-button>
+              <el-button native-type="button" :loading="snapshotsLoading" @click.prevent.stop="querySnapshots">
+                <el-icon class="el-icon--left"><Refresh /></el-icon>查询
+              </el-button>
               <el-button v-if="canMutate" type="primary" :loading="collectingSnap" @click="collectSnapshot">立即采集</el-button>
               <el-button v-if="canMutate" type="warning" :loading="forecastLoading" @click="runForecast">生成预测</el-button>
             </div>
-            <el-table :data="snapshots" size="small" stripe>
+            <el-table v-loading="snapshotsLoading" :data="snapshots" size="small" stripe>
               <el-table-column prop="INSTANCE_NAME" label="实例" min-width="120"/>
               <el-table-column prop="SNAP_DATE" label="日期" width="110"/>
               <el-table-column prop="DISK_USED_GB" label="磁盘已用(GB)" width="120"/>
@@ -644,9 +666,11 @@
               <el-select v-model="capacityInstanceId" placeholder="选择实例" clearable style="width:180px">
                 <el-option v-for="i in instances" :key="i.INSTANCE_ID" :label="i.INSTANCE_NAME" :value="i.INSTANCE_ID"/>
               </el-select>
-              <el-button @click="loadForecasts" :icon="Refresh">查询</el-button>
+              <el-button native-type="button" :loading="forecastsLoading" @click.prevent.stop="queryForecasts">
+                <el-icon class="el-icon--left"><Refresh /></el-icon>查询
+              </el-button>
             </div>
-            <el-table :data="forecasts" size="small" stripe>
+            <el-table v-loading="forecastsLoading" :data="forecasts" size="small" stripe>
               <el-table-column prop="INSTANCE_NAME" label="实例" min-width="120"/>
               <el-table-column prop="METRIC_TYPE" label="预测指标" width="100"><template #default="{row}"><el-tag size="small">{{row.METRIC_TYPE==='DISK'?'磁盘(GB)':'TPS'}}</el-tag></template></el-table-column>
               <el-table-column prop="FORECAST_DATE" label="预测日期" width="110"/>
@@ -658,10 +682,12 @@
 
           <el-tab-pane label="成本分析" name="cost">
             <div class="toolbar">
-              <el-button @click="loadCostAnalysis" :icon="Refresh">刷新</el-button>
+              <el-button native-type="button" :loading="costQueryLoading" @click.prevent.stop="refreshCostAnalysis">
+                <el-icon class="el-icon--left"><Refresh /></el-icon>刷新
+              </el-button>
               <el-button v-if="canMutate" type="primary" :loading="costAnalysisLoading" @click="runCostAnalysis">立即分析</el-button>
             </div>
-            <el-table :data="costAnalysis" size="small" stripe>
+            <el-table v-loading="costQueryLoading" :data="costAnalysis" size="small" stripe>
               <el-table-column prop="INSTANCE_NAME" label="实例" min-width="120"/>
               <el-table-column prop="BUSINESS_TAG" label="业务标签" width="120"/>
               <el-table-column prop="ANALYSIS_DATE" label="分析日期" width="110"/>
@@ -679,10 +705,13 @@
         <el-tabs v-model="backupTab" type="card">
           <el-tab-pane label="备份策略" name="policies">
             <div class="toolbar">
-              <el-button @click="loadBackupPolicies" :icon="Refresh">刷新</el-button>
+              <el-button native-type="button" :loading="bkPoliciesLoading" @click.prevent.stop="refreshBackupPolicies">
+                <el-icon class="el-icon--left"><Refresh /></el-icon>刷新
+              </el-button>
               <el-button v-if="canMutate" type="primary" @click="openBkPolicyDlg()">新建策略</el-button>
             </div>
-            <el-table :data="bkPolicies" size="small" stripe>
+            <el-table v-loading="bkPoliciesLoading" :data="bkPolicies" size="small" stripe>
+              <template #empty><el-empty description="无结果" /></template>
               <el-table-column prop="POLICY_NAME" label="策略名称" min-width="150"/>
               <el-table-column prop="INSTANCE_NAME" label="实例" width="130"/>
               <el-table-column prop="BACKUP_TYPE" label="备份类型" width="100"><template #default="{row}"><el-tag size="small" :type="bkTypeColor(row.BACKUP_TYPE)">{{bkTypeLabel(row.BACKUP_TYPE)}}</el-tag></template></el-table-column>
@@ -711,9 +740,12 @@
                 <el-option label="成功" value="SUCCESS"/><el-option label="失败" value="FAILED"/>
                 <el-option label="运行中" value="RUNNING"/>
               </el-select>
-              <el-button @click="loadBkRecords" :icon="Refresh">刷新</el-button>
+              <el-button native-type="button" :loading="bkRecordsLoading" @click.prevent.stop="refreshBkRecords">
+                <el-icon class="el-icon--left"><Refresh /></el-icon>刷新
+              </el-button>
             </div>
-            <el-table :data="bkRecords" size="small" stripe>
+            <el-table v-loading="bkRecordsLoading" :data="bkRecords" size="small" stripe>
+              <template #empty><el-empty description="无结果" /></template>
               <el-table-column prop="INSTANCE_NAME" label="实例" min-width="120"/>
               <el-table-column prop="BACKUP_TYPE" label="类型" width="90"><template #default="{row}"><el-tag :type="bkTypeColor(row.BACKUP_TYPE)" size="small">{{bkTypeLabel(row.BACKUP_TYPE)}}</el-tag></template></el-table-column>
               <el-table-column prop="STATUS" label="状态" width="80"><template #default="{row}"><el-tag :type="bkStatusColor(row.STATUS)" size="small">{{row.STATUS}}</el-tag></template></el-table-column>
@@ -726,8 +758,13 @@
           </el-tab-pane>
 
           <el-tab-pane label="备份监控统计" name="bkstats">
-            <div class="toolbar"><el-button @click="loadBkStats" :icon="Refresh">刷新</el-button></div>
-            <div class="stats-cards" v-if="bkStats">
+            <div class="toolbar">
+              <el-button native-type="button" :loading="bkStatsLoading" @click.prevent.stop="refreshBkStats">
+                <el-icon class="el-icon--left"><Refresh /></el-icon>刷新
+              </el-button>
+            </div>
+            <el-empty v-if="!bkStatsLoading && !hasBkStatsData" description="无结果" />
+            <div v-else-if="bkStats" class="stats-cards">
               <el-card v-for="s in bkStats.statusSummary||[]" :key="s.STATUS" class="stat-card">
                 <div class="stat-title">{{s.STATUS}}</div>
                 <div class="stat-value" :class="s.STATUS==='FAILED'?'text-danger':'text-success'">{{s.CNT}} 次</div>
@@ -735,19 +772,25 @@
                 <div class="stat-sub">累计 {{s.TOTAL_GB}} GB</div>
               </el-card>
             </div>
-            <el-divider>近7天失败TOP实例</el-divider>
-            <el-table :data="bkStats?.topFailures||[]" size="small" stripe>
-              <el-table-column prop="INSTANCE_NAME" label="实例" min-width="150"/>
-              <el-table-column prop="FAIL_CNT" label="失败次数" width="100"/>
-            </el-table>
+            <template v-if="hasBkStatsData">
+              <el-divider>近7天失败TOP实例</el-divider>
+              <el-table :data="bkStats?.topFailures||[]" size="small" stripe>
+                <template #empty><el-empty description="无结果" /></template>
+                <el-table-column prop="INSTANCE_NAME" label="实例" min-width="150"/>
+                <el-table-column prop="FAIL_CNT" label="失败次数" width="100"/>
+              </el-table>
+            </template>
           </el-tab-pane>
 
           <el-tab-pane label="恢复管理" name="restores">
             <div class="toolbar">
-              <el-button @click="loadRestores" :icon="Refresh">刷新</el-button>
+              <el-button native-type="button" :loading="restoresLoading" @click.prevent.stop="refreshRestores">
+                <el-icon class="el-icon--left"><Refresh /></el-icon>刷新
+              </el-button>
               <el-button type="primary" @click="openRestoreDlg()">新建恢复任务</el-button>
             </div>
-            <el-table :data="restores" size="small" stripe>
+            <el-table v-loading="restoresLoading" :data="restores" size="small" stripe>
+              <template #empty><el-empty description="无结果" /></template>
               <el-table-column prop="INSTANCE_NAME" label="实例" min-width="120"/>
               <el-table-column prop="RESTORE_TYPE" label="恢复类型" width="110"><template #default="{row}"><el-tag size="small" type="warning">{{restoreTypeLabel(row.RESTORE_TYPE)}}</el-tag></template></el-table-column>
               <el-table-column prop="STATUS" label="状态" width="90"><template #default="{row}"><el-tag :type="bkStatusColor(row.STATUS)" size="small">{{row.STATUS}}</el-tag></template></el-table-column>
@@ -1056,7 +1099,7 @@
     </el-dialog>
 
     <!-- ══ SQL 治理人工审核 Dialog ══ -->
-    <el-dialog v-model="auditDetailDlgVisible" title="SQL 治理审查详情 · 人工审核" width="760px" :close-on-click-modal="false">
+    <el-dialog v-model="auditDetailDlgVisible" title="SQL 治理审查详情 · 人工审核" width="820px" :close-on-click-modal="false">
       <div v-loading="auditDetailLoading" element-loading-text="加载审查详情...">
         <template v-if="auditDetailRow">
           <!-- 基本信息 -->
@@ -1094,9 +1137,33 @@
             </div>
           </div>
 
+          <!-- 实例校验（来自审核时连接目标库的结果） -->
+          <template v-if="auditDetailRow.AUDIT_RESULT_JSON?.instanceCheck">
+            <el-divider content-position="left" style="margin:12px 0 8px">实例校验结果</el-divider>
+            <div class="inst-check-meta">
+              <span>{{ auditDetailRow.AUDIT_RESULT_JSON.instanceCheck.instanceName || healthInstanceLabel({ INSTANCE_NAME: auditDetailRow.INSTANCE_NAME, INSTANCE_ID: auditDetailRow.INSTANCE_ID }) }}</span>
+              <el-tag size="small" type="info">{{ auditDetailRow.AUDIT_RESULT_JSON.instanceCheck.dbType }}</el-tag>
+              <el-tag size="small" :type="auditDetailRow.AUDIT_RESULT_JSON.instanceCheck.connected?'success':'danger'">
+                {{ auditDetailRow.AUDIT_RESULT_JSON.instanceCheck.connected ? '已连接' : '连接失败' }}
+              </el-tag>
+            </div>
+            <div v-if="auditDetailRow.AUDIT_RESULT_JSON.instanceCheck.tables?.length" class="inst-table-list">
+              <div v-for="(t,ti) in auditDetailRow.AUDIT_RESULT_JSON.instanceCheck.tables" :key="ti" class="inst-table-row">
+                <el-tag size="small" :type="t.exists?'success':'danger'">{{ t.exists ? '表存在' : '表缺失' }}</el-tag>
+                <span>{{ t.schema ? t.schema+'.' : '' }}{{ t.name }}</span>
+              </div>
+            </div>
+            <div v-if="auditDetailRow.AUDIT_RESULT_JSON.instanceCheck.explainPlan" class="inst-explain-wrap">
+              <div class="inst-explain-title">执行计划</div>
+              <pre class="sql-pre inst-explain-pre audit-detail-explain">{{ auditDetailRow.AUDIT_RESULT_JSON.instanceCheck.explainPlan }}</pre>
+            </div>
+          </template>
+
           <!-- SQL 全文 -->
-          <div style="font-size:12px;font-weight:600;color:#606266;margin-bottom:4px">SQL 全文：</div>
-          <pre class="sql-pre review-sql-pre">{{auditDetailRow.SQL_TEXT}}</pre>
+          <el-divider content-position="left" style="margin:12px 0 8px">SQL 全文</el-divider>
+          <pre class="sql-pre review-sql-pre audit-detail-sql">{{ formatAuditSqlText(auditDetailRow.SQL_TEXT) }}</pre>
+          <el-alert v-if="isAuditSqlPlaceholder(auditDetailRow.SQL_TEXT)" type="warning" :closable="false" show-icon
+            title="该记录为系统自动收录的占位说明，非完整 SQL 文本；请在「SQL即时审核」中重新提交真实 SQL" style="margin-top:8px"/>
 
           <!-- 已有人工审核结果时展示 -->
           <el-alert v-if="auditDetailRow.REVIEW_STATUS==='CONFIRMED'" type="success" :closable="false"
@@ -1214,8 +1281,8 @@
         </el-form-item>
       </el-form>
       <template #footer>
-        <el-button @click="execDlgVisible=false">取消</el-button>
-        <el-button type="primary" :loading="saving" @click="doExecuteTicket">确认执行</el-button>
+        <el-button native-type="button" @click="execDlgVisible=false">取消</el-button>
+        <el-button native-type="button" type="primary" :loading="saving" @click.prevent.stop="doExecuteTicket">确认执行</el-button>
       </template>
     </el-dialog>
 
@@ -1482,6 +1549,32 @@ const faultTypesFor = db => {
 }
 const auditSourceLabel = s => ({MANUAL:'手动审核',FAULT_AUTO:'故障自动',SLOW_IMPORT:'慢查询导入',PUBLISH_PRE:'发布预审'})[s]||s
 
+/** 健康度条：仅展示已关联实例的记录，避免 #null */
+const sqlHealthDisplay = computed(() =>
+  (sqlHealthOverview.value || [])
+    .filter(h => h.INSTANCE_ID != null && h.INSTANCE_ID !== '')
+    .slice(0, 6)
+)
+
+function healthInstanceLabel(h) {
+  if (h?.INSTANCE_NAME) return String(h.INSTANCE_NAME)
+  if (h?.INSTANCE_ID != null && h.INSTANCE_ID !== '') return `实例 #${h.INSTANCE_ID}`
+  return '未关联实例'
+}
+
+function formatAuditSqlText(text) {
+  if (text == null || text === '') return '（无 SQL 文本）'
+  const s = String(text).trim()
+  if (!s) return '（无 SQL 文本）'
+  if (s === '[object Object]' || /^\[object\s/i.test(s)) return '（SQL 内容解析失败，请重新执行「立即审核」后查看）'
+  return s
+}
+
+function isAuditSqlPlaceholder(text) {
+  const s = String(text || '').trim()
+  return /^--\s*(慢查询|系统自动)/i.test(s) || s.length < 20
+}
+
 // ── State ──────────────────────────────────────────────────
 const activeModule = ref('inspect')
 const saving = ref(false)
@@ -1589,6 +1682,10 @@ const topologies = ref([])
 const switches = ref([])
 const drLinks = ref([])
 const haDashboard = ref(null)
+const topologiesLoading = ref(false)
+const switchesLoading = ref(false)
+const drLinksLoading = ref(false)
+const drLinkRefreshingId = ref(null)
 const healthCheckResult = ref(null)
 const switchHistFilter = reactive({switchType:''})
 const drillingLink = ref(null)
@@ -1621,6 +1718,9 @@ const capacityInstanceId = ref(null)
 const snapshots = ref([])
 const forecasts = ref([])
 const costAnalysis = ref([])
+const snapshotsLoading = ref(false)
+const forecastsLoading = ref(false)
+const costQueryLoading = ref(false)
 const collectingSnap = ref(false)
 const forecastLoading = ref(false)
 const costAnalysisLoading = ref(false)
@@ -1632,11 +1732,21 @@ const bkRecords = ref([])
 const bkStats = ref(null)
 const restores = ref([])
 const bkFilter = reactive({backupType:'',status:''})
+const bkPoliciesLoading = ref(false)
+const bkRecordsLoading = ref(false)
+const bkStatsLoading = ref(false)
+const restoresLoading = ref(false)
 const runningBk = ref(null)
 const bkPolicyDlgVisible = ref(false)
 const bkPolicyForm = reactive({policyId:null,policyName:'',instanceId:null,backupType:'FULL',storageType:'LOCAL',storagePath:'/backup',retentionDays:7,schedule:'0 2 * * *',compress:true,encrypt:false})
 const restoreDlgVisible = ref(false)
 const restoreForm = reactive({instanceId:null,restoreType:'PITR',targetTime:'',targetTable:'',flashbackScn:''})
+const hasBkStatsData = computed(() => {
+  const s = bkStats.value
+  if (!s) return false
+  return (Array.isArray(s.statusSummary) && s.statusSummary.length > 0)
+    || (Array.isArray(s.topFailures) && s.topFailures.length > 0)
+})
 
 // ── Helpers ────────────────────────────────────────────────
 const fmtTime = t => t ? String(t).replace('T',' ').substring(0,19) : '-'
@@ -2196,11 +2306,17 @@ async function submitReview() {
 }
 function openExecDlg(row) { execRow.value=row; execGrayPct.value=row.GRAY_PERCENT||100; execDlgVisible.value=true }
 async function doExecuteTicket() {
-  saving.value=true
+  const ticketId = execRow.value?.TICKET_ID
+  if (!ticketId) return ElMessage.warning('工单信息无效，请关闭后重新打开执行对话框')
+  saving.value = true
   try {
-    const r = await automationApi.executePublishTicket(execRow.value.TICKET_ID,{grayPercent:execGrayPct.value})
-    ElMessage.success(r.msg); execDlgVisible.value=false; loadTickets()
-  } catch {} finally { saving.value=false }
+    const r = await automationApi.executePublishTicket(ticketId, { grayPercent: execGrayPct.value })
+    ElMessage.success(r.msg || '执行成功')
+    execDlgVisible.value = false
+    loadTickets()
+  } catch (e) {
+    ElMessage.error(e?.message || '执行失败')
+  } finally { saving.value = false }
 }
 async function rollbackTicket(row) {
   const reason = await ElMessageBox.prompt('回滚原因','回滚确认',{inputType:'textarea'}).then(v=>v.value).catch(()=>{throw ''})
@@ -2303,7 +2419,12 @@ async function openAuditDetail(row) {
   try {
     const r = await automationApi.sqlAuditDetail(row.AUDIT_ID)
     auditDetailRow.value = r.data
-  } catch {} finally { auditDetailLoading.value = false }
+    if (!auditDetailRow.value?.SQL_TEXT && row.SQL_PREVIEW) {
+      auditDetailRow.value = { ...auditDetailRow.value, SQL_TEXT: row.SQL_PREVIEW + '\n-- （以上为列表预览，完整 SQL 未加载）' }
+    }
+  } catch (e) {
+    ElMessage.error(e?.message || '加载审查详情失败')
+  } finally { auditDetailLoading.value = false }
 }
 // 提交人工审核结果（CONFIRM / IGNORE）
 async function submitAuditReview(action) {
@@ -2430,29 +2551,80 @@ async function runRegression() {
 
 // ── HA ────────────────────────────────────────────────────
 async function loadHaDashboard() {
-  const r = await automationApi.haDashboard().catch(()=>null)
-  if(r?.data) haDashboard.value = r.data
+  try {
+    const r = await automationApi.haDashboard()
+    if (r?.data) haDashboard.value = r.data
+    return true
+  } catch {
+    return false
+  }
 }
 async function loadTopologies() {
-  const r = await automationApi.haTopologies().catch(()=>({data:[]}))
-  topologies.value = r.data||[]
+  topologiesLoading.value = true
+  try {
+    const r = await automationApi.haTopologies()
+    topologies.value = Array.isArray(r.data) ? [...r.data] : []
+    return true
+  } catch (e) {
+    topologies.value = []
+    ElMessage.error(e?.message || '加载 HA 拓扑失败')
+    return false
+  } finally {
+    topologiesLoading.value = false
+  }
+}
+async function refreshTopologies() {
+  const ok = await loadTopologies()
+  await loadHaDashboard()
+  if (ok) ElMessage.success('HA 拓扑列表已刷新')
 }
 async function doHealthCheck(row) {
   healthCheckResult.value = null
   const r = await automationApi.haHealthCheck(row.TOPO_ID).catch(()=>null)
   if(r?.data) { healthCheckResult.value = r.data; ElMessage.success('健康检查完成') }
+  else ElMessage.error('健康检查失败')
 }
 async function loadSwitches(topoId) {
   const p = {}
   if(topoId) p.topoId = topoId
   if(switchHistFilter.switchType) p.switchType = switchHistFilter.switchType
-  const r = await automationApi.haSwitches(p).catch(()=>({data:[]}))
-  switches.value = r.data||[]
+  switchesLoading.value = true
+  try {
+    const r = await automationApi.haSwitches(p)
+    switches.value = Array.isArray(r.data) ? [...r.data] : []
+    return true
+  } catch (e) {
+    switches.value = []
+    ElMessage.error(e?.message || '加载切换记录失败')
+    return false
+  } finally {
+    switchesLoading.value = false
+  }
+}
+async function refreshSwitches() {
+  const ok = await loadSwitches()
+  await loadHaDashboard()
+  if (ok) ElMessage.success('切换记录已刷新')
 }
 function viewSwitchHistory(id) { haTab.value='switches'; loadSwitches(id) }
 async function loadDrLinks() {
-  const r = await automationApi.drLinks().catch(()=>({data:[]}))
-  drLinks.value = r.data||[]
+  drLinksLoading.value = true
+  try {
+    const r = await automationApi.drLinks()
+    drLinks.value = Array.isArray(r.data) ? [...r.data] : []
+    return true
+  } catch (e) {
+    drLinks.value = []
+    ElMessage.error(e?.message || '加载容灾链路失败')
+    return false
+  } finally {
+    drLinksLoading.value = false
+  }
+}
+async function refreshDrLinks() {
+  const ok = await loadDrLinks()
+  await loadHaDashboard()
+  if (ok) ElMessage.success('容灾链路已刷新')
 }
 async function doDrDrill(link) {
   await ElMessageBox.confirm(`确认对容灾链路 [${link.LINK_NAME}] 执行容灾演练？演练将模拟主备切换流程，不影响生产数据。`,'容灾演练',{type:'info',confirmButtonText:'开始演练',cancelButtonText:'取消'}).catch(()=>{throw ''})
@@ -2506,60 +2678,203 @@ async function saveDrLink() {
   catch {} finally { saving.value=false }
 }
 async function refreshDrLink(id) {
-  const r = await automationApi.refreshDrLink(id).catch(()=>({data:{}}))
-  ElMessage.info(`延迟: ${r.data?.delayMs}ms  状态: ${r.data?.status}${r.data?.fromMonitor?' (实时监控数据)':''}`); loadDrLinks()
+  drLinkRefreshingId.value = id
+  try {
+    const r = await automationApi.refreshDrLink(id)
+    const d = r.data || {}
+    ElMessage.success(`链路状态已更新：延迟 ${d.delayMs ?? '-'}ms，状态 ${d.status || '未知'}${d.fromMonitor ? '（实时监控）' : ''}`)
+    await loadDrLinks()
+    await loadHaDashboard()
+  } catch (e) {
+    ElMessage.error(e?.message || '刷新链路状态失败')
+  } finally {
+    drLinkRefreshingId.value = null
+  }
 }
 
 // ── CAPACITY ───────────────────────────────────────────────
 async function loadSnapshots() {
-  const p = {days:30}; if(capacityInstanceId.value) p.instanceId=capacityInstanceId.value
-  const r = await automationApi.capacitySnapshots(p).catch(()=>({data:[]}))
-  snapshots.value = r.data||[]
+  const p = { days: 30 }
+  if (capacityInstanceId.value) p.instanceId = capacityInstanceId.value
+  snapshotsLoading.value = true
+  try {
+    const r = await automationApi.capacitySnapshots(p)
+    snapshots.value = Array.isArray(r.data) ? [...r.data] : []
+    return true
+  } catch (e) {
+    snapshots.value = []
+    ElMessage.error(e?.message || '查询容量快照失败')
+    return false
+  } finally {
+    snapshotsLoading.value = false
+  }
+}
+async function querySnapshots() {
+  const ok = await loadSnapshots()
+  if (ok) {
+    const n = snapshots.value.length
+    ElMessage.success(n ? `已加载 ${n} 条容量快照` : '查询完成，暂无容量快照数据')
+  }
 }
 async function collectSnapshot() {
   if(!capacityInstanceId.value) return ElMessage.warning('请选择实例')
   collectingSnap.value=true
-  try { const r=await automationApi.collectCapacitySnapshot({instanceId:capacityInstanceId.value}); ElMessage.success(r.msg||'采集成功'); loadSnapshots() }
-  catch {} finally { collectingSnap.value=false }
+  try {
+    const r = await automationApi.collectCapacitySnapshot({ instanceId: capacityInstanceId.value })
+    ElMessage.success(r.msg || '采集成功')
+    await loadSnapshots()
+  } catch (e) {
+    ElMessage.error(e?.message || '采集失败')
+  } finally { collectingSnap.value=false }
 }
 async function loadForecasts() {
-  const p = {}; if(capacityInstanceId.value) p.instanceId=capacityInstanceId.value
-  const r = await automationApi.capacityForecasts(p).catch(()=>({data:[]}))
-  forecasts.value = r.data||[]
+  const p = {}
+  if (capacityInstanceId.value) p.instanceId = capacityInstanceId.value
+  forecastsLoading.value = true
+  try {
+    const r = await automationApi.capacityForecasts(p)
+    forecasts.value = Array.isArray(r.data) ? [...r.data] : []
+    return true
+  } catch (e) {
+    forecasts.value = []
+    ElMessage.error(e?.message || '查询容量预测失败')
+    return false
+  } finally {
+    forecastsLoading.value = false
+  }
+}
+async function queryForecasts() {
+  const ok = await loadForecasts()
+  if (ok) {
+    const n = forecasts.value.length
+    ElMessage.success(n ? `已加载 ${n} 条预测记录` : '查询完成，暂无预测数据，可先选择实例后点击「生成预测」')
+  }
 }
 async function runForecast() {
   if(!capacityInstanceId.value) return ElMessage.warning('请选择实例')
   forecastLoading.value=true
-  try { const r=await automationApi.runCapacityForecast({instanceId:capacityInstanceId.value}); ElMessage.success(r.msg||'预测完成'); loadForecasts() }
-  catch {} finally { forecastLoading.value=false }
+  try {
+    const r = await automationApi.runCapacityForecast({ instanceId: capacityInstanceId.value })
+    ElMessage.success(r.msg || '预测完成')
+    await loadForecasts()
+  } catch (e) {
+    ElMessage.error(e?.message || '生成预测失败')
+  } finally { forecastLoading.value=false }
 }
 async function loadCostAnalysis() {
-  const r = await automationApi.costAnalysis().catch(()=>({data:[]}))
-  costAnalysis.value = r.data||[]
+  costQueryLoading.value = true
+  try {
+    const r = await automationApi.costAnalysis()
+    costAnalysis.value = Array.isArray(r.data) ? [...r.data] : []
+    return true
+  } catch (e) {
+    costAnalysis.value = []
+    ElMessage.error(e?.message || '加载成本分析失败')
+    return false
+  } finally {
+    costQueryLoading.value = false
+  }
+}
+async function refreshCostAnalysis() {
+  const ok = await loadCostAnalysis()
+  if (ok) {
+    const n = costAnalysis.value.length
+    ElMessage.success(n ? `已加载 ${n} 条成本分析记录` : '刷新完成，暂无成本分析数据，可点击「立即分析」生成')
+  }
 }
 async function runCostAnalysis() {
   costAnalysisLoading.value=true
-  try { const r=await automationApi.runCostAnalysis(); ElMessage.success(r.msg||'分析完成'); loadCostAnalysis() }
-  catch {} finally { costAnalysisLoading.value=false }
+  try {
+    const r = await automationApi.runCostAnalysis()
+    ElMessage.success(r.msg || '分析完成')
+    await loadCostAnalysis()
+  } catch (e) {
+    ElMessage.error(e?.message || '成本分析失败')
+  } finally { costAnalysisLoading.value=false }
 }
 
 // ── BACKUP ─────────────────────────────────────────────────
+function showBackupLoadResult(ok, count, label) {
+  if (!ok) return
+  if (count > 0) ElMessage.success(`已加载 ${count} 条${label}`)
+  else ElMessage.warning('查询无结果')
+}
 async function loadBackupPolicies() {
-  const r = await automationApi.backupPolicies().catch(()=>({data:[]}))
-  bkPolicies.value = r.data||[]
+  bkPoliciesLoading.value = true
+  try {
+    const r = await automationApi.backupPolicies()
+    bkPolicies.value = Array.isArray(r.data) ? [...r.data] : []
+    return true
+  } catch (e) {
+    bkPolicies.value = []
+    ElMessage.error(e?.message || '加载备份策略失败')
+    return false
+  } finally {
+    bkPoliciesLoading.value = false
+  }
+}
+async function refreshBackupPolicies() {
+  const ok = await loadBackupPolicies()
+  showBackupLoadResult(ok, bkPolicies.value.length, '备份策略')
 }
 async function loadBkRecords() {
-  const p = {}; if(bkFilter.backupType) p.backupType=bkFilter.backupType; if(bkFilter.status) p.status=bkFilter.status
-  const r = await automationApi.backupRecords(p).catch(()=>({data:[]}))
-  bkRecords.value = r.data||[]
+  const p = {}
+  if (bkFilter.backupType) p.backupType = bkFilter.backupType
+  if (bkFilter.status) p.status = bkFilter.status
+  bkRecordsLoading.value = true
+  try {
+    const r = await automationApi.backupRecords(p)
+    bkRecords.value = Array.isArray(r.data) ? [...r.data] : []
+    return true
+  } catch (e) {
+    bkRecords.value = []
+    ElMessage.error(e?.message || '加载备份记录失败')
+    return false
+  } finally {
+    bkRecordsLoading.value = false
+  }
+}
+async function refreshBkRecords() {
+  const ok = await loadBkRecords()
+  showBackupLoadResult(ok, bkRecords.value.length, '备份记录')
 }
 async function loadBkStats() {
-  const r = await automationApi.backupStats().catch(()=>({data:{}}))
-  bkStats.value = r.data
+  bkStatsLoading.value = true
+  try {
+    const r = await automationApi.backupStats()
+    bkStats.value = r.data || null
+    return true
+  } catch (e) {
+    bkStats.value = null
+    ElMessage.error(e?.message || '加载备份统计失败')
+    return false
+  } finally {
+    bkStatsLoading.value = false
+  }
+}
+async function refreshBkStats() {
+  const ok = await loadBkStats()
+  if (!ok) return
+  if (hasBkStatsData.value) ElMessage.success('备份统计数据已刷新')
+  else ElMessage.warning('查询无结果')
 }
 async function loadRestores() {
-  const r = await automationApi.restoreTasks().catch(()=>({data:[]}))
-  restores.value = r.data||[]
+  restoresLoading.value = true
+  try {
+    const r = await automationApi.restoreTasks()
+    restores.value = Array.isArray(r.data) ? [...r.data] : []
+    return true
+  } catch (e) {
+    restores.value = []
+    ElMessage.error(e?.message || '加载恢复任务失败')
+    return false
+  } finally {
+    restoresLoading.value = false
+  }
+}
+async function refreshRestores() {
+  const ok = await loadRestores()
+  showBackupLoadResult(ok, restores.value.length, '恢复任务')
 }
 function openBkPolicyDlg(row) {
   if(row) Object.assign(bkPolicyForm,{policyId:row.POLICY_ID,policyName:row.POLICY_NAME,instanceId:row.INSTANCE_ID,backupType:row.BACKUP_TYPE,storageType:row.STORAGE_TYPE,storagePath:row.STORAGE_PATH,retentionDays:row.RETENTION_DAYS,schedule:row.SCHEDULE,compress:!!row.COMPRESS,encrypt:!!row.ENCRYPT})
@@ -2671,6 +2986,17 @@ onMounted(async () => {
 .stat-sub    { font-size:12px; color:#909399; margin-top:2px }
 .sql-pre     { background:#f4f4f5; border-radius:4px; padding:12px; font-size:12px; overflow:auto; max-height:200px; white-space:pre-wrap; word-break:break-all }
 .review-sql-pre { max-height:260px; border:1px solid #e4e7ed }
+.audit-detail-sql { max-height:320px; font-family:ui-monospace,Consolas,Monaco,monospace; font-size:13px; line-height:1.55; background:#1e1e1e; color:#d4d4d4; padding:14px; border-radius:6px }
+.audit-detail-explain { max-height:200px; background:#f8f9fa }
+.sql-health-section { margin-bottom:14px; padding:12px 14px; background:#fff; border:1px solid #e4e7ed; border-radius:8px }
+.sql-health-section-title { font-size:13px; font-weight:600; color:#303133; margin-bottom:10px }
+.sql-health-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(168px,1fr)); gap:10px }
+.sql-health-card { padding:10px 12px; border:1px solid #ebeef5; border-radius:8px; background:linear-gradient(180deg,#fafbfc 0%,#fff 100%) }
+.sql-health-card-head { display:flex; align-items:center; justify-content:space-between; gap:6px; margin-bottom:6px; min-height:22px }
+.sql-health-inst-name { font-size:13px; font-weight:600; color:#303133; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; flex:1; min-width:0 }
+.sql-health-card-score { font-size:22px; font-weight:700; line-height:1.2; margin:4px 0 6px }
+.sql-health-unit { font-size:12px; font-weight:400; margin-left:2px; opacity:.75 }
+.sql-health-card-meta { font-size:11px; color:#909399; margin-top:6px }
 .inspect-file-item-wrap { position: relative }
 .hidden-file-input { position: absolute; width: 0; height: 0; opacity: 0; pointer-events: none; }
 .inspect-file-row { display:flex; align-items:center; gap:8px; flex-wrap:wrap }
