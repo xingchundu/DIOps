@@ -13,6 +13,7 @@ const { automationLog } = require('../services/automationExecLog');
 const {
   executeBackupPolicy,
   executeRestoreTask,
+  extractOracleOutBindNumber,
   normalizePolicyStoragePath,
   resolveStorageRoot,
 } = require('../services/backupRestoreRunner');
@@ -2001,8 +2002,9 @@ router.post('/backup/restores', adminDba, async (req,res) => {
        RETURNING RESTORE_ID INTO :outId`,
       binds
     );
-    const restoreId = ins.outBinds?.outId?.[0] ?? ins.outBinds?.outId ?? binds.outId?.val;
-    await automationLog(req,'BACKUP',restoreId ?? null,'CREATE_RESTORE','SUCCESS',`${restoreType}`);
+    const restoreId = extractOracleOutBindNumber(ins, 'outId');
+    if (restoreId == null) return res.json({ code: 500, msg: '恢复任务创建失败：未获取 RESTORE_ID' });
+    await automationLog(req,'BACKUP',restoreId,'CREATE_RESTORE','SUCCESS',`${restoreType}`);
     res.json({code:200,msg:'恢复任务已创建',data:{restoreId}});
   }catch(e){res.json({code:500,msg:e.message});}
 });

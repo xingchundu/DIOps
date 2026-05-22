@@ -139,6 +139,72 @@ function ensureDir(dir) {
   fs.mkdirSync(dir, { recursive: true });
 }
 
+/** 转为可 JSON 序列化的标量（避免 Oracle/达梦驱动对象循环引用） */
+function toJsonSafe(value) {
+  if (value == null) return null;
+  if (value instanceof Date) return value.toISOString();
+  const t = typeof value;
+  if (t === 'string' || t === 'number' || t === 'boolean') return value;
+  if (Buffer.isBuffer(value)) return value.toString('utf8');
+  try {
+    return String(value);
+  } catch {
+    return null;
+  }
+}
+
+function sanitizeRows(rows) {
+  if (!Array.isArray(rows)) return [];
+  return rows.map((row) => {
+    const plain = {};
+    for (const [k, v] of Object.entries(row || {})) {
+      plain[k] = toJsonSafe(v);
+    }
+    return plain;
+  });
+}
+
+function safeJsonStringify(obj) {
+  const seen = new WeakSet();
+  return JSON.stringify(obj, (key, val) => {
+    if (val != null && typeof val === 'object') {
+      if (typeof val === 'function') return undefined;
+      if (seen.has(val)) return undefined;
+      seen.add(val);
+      if (val instanceof Date) return val.toISOString();
+      const ctor = val.constructor?.name || '';
+      if (/ConnectDescription|ConnOption|Connection|Pool/i.test(ctor)) return undefined;
+    }
+    return val;
+  });
+}
+
+/** 解析 INSERT RETURNING 的 NUMBER 出参，避免把 BIND_OUT 对象返回给前端 */
+function extractOracleOutBindNumber(result, bindName) {
+  const raw = result?.outBinds?.[bindName];
+  if (Array.isArray(raw) && raw.length > 0) {
+    const n = Number(raw[0]);
+    return Number.isFinite(n) ? n : null;
+  }
+  if (typeof raw === 'number' && Number.isFinite(raw)) return raw;
+  return null;
+}
+
+function buildRestoreDetail(inst, task, backupRecord) {
+  const rt = toJsonSafe(task.RESTORE_TYPE);
+  const tt = toJsonSafe(task.TARGET_TIME);
+  const tbl = toJsonSafe(task.TARGET_TABLE);
+  const scn = toJsonSafe(task.FLASHBACK_SCN);
+  const bf = backupRecord?.FILE_PATH || null;
+  const cs = buildConnectString(inst);
+  let s = `驱动恢复预检通过 (${normalizeDbType(inst)} / ${rt})；连接 ${cs}`;
+  if (bf) s += `；备份文件 ${bf}`;
+  if (tt) s += `；目标时间 ${tt}`;
+  if (tbl) s += `；表 ${tbl}`;
+  if (scn != null && scn !== '') s += `；SCN ${scn}`;
+  return `${s}；实例连通正常`;
+}
+
 function resolveScript(map, dbType, key) {
   const t = String(dbType || '').toUpperCase();
   const k = String(key || '').toUpperCase();
@@ -276,7 +342,7 @@ async function collectDbSnapshot(inst) {
          FROM V$DATABASE d`,
         []
       );
-      return { mode: 'driver', dbType: t, rows: r.rows || [] };
+      return { mode: 'driver', dbType: t, rows: sanitizeRows(r.rows) };
     } finally {
       await conn.close().catch(() => {});
     }
@@ -286,7 +352,12 @@ async function collectDbSnapshot(inst) {
     try {
       const [ver] = await conn.query('SELECT VERSION() AS V');
       const [ms] = await conn.query('SHOW MASTER STATUS');
-      return { mode: 'driver', dbType: t, version: ver?.[0], masterStatus: ms?.[0] };
+      return {
+        mode: 'driver',
+        dbType: t,
+        version: sanitizeRows(ver),
+        masterStatus: sanitizeRows(ms),
+      };
     } finally {
       await conn.end().catch(() => {});
     }
@@ -295,7 +366,7 @@ async function collectDbSnapshot(inst) {
     const client = await connectPostgres(inst);
     try {
       const r = await client.query('SELECT version() AS v, pg_is_in_recovery() AS recovery');
-      return { mode: 'driver', dbType: t, rows: r.rows };
+      return { mode: 'driver', dbType: t, rows: sanitizeRows(r.rows) };
     } finally {
       await client.end().catch(() => {});
     }
@@ -303,8 +374,8 @@ async function collectDbSnapshot(inst) {
   if (t === 'DAMENG') {
     const conn = await connectDameng(inst);
     try {
-      const r = await conn.execute('SELECT 1 AS OK FROM DUAL');
-      return { mode: 'driver', dbType: t, rows: r.rows || r };
+      await conn.execute('SELECT 1 AS OK FROM DUAL');
+      return { mode: 'driver', dbType: t, rows: [{ OK: 1 }] };
     } finally {
       await conn.close().catch(() => {});
     }
@@ -315,7 +386,7 @@ async function collectDbSnapshot(inst) {
 function writeManifest(filePath, payload) {
   const manifestPath = `${filePath}.manifest.json`;
   ensureDir(path.dirname(manifestPath));
-  fs.writeFileSync(manifestPath, JSON.stringify(payload, null, 2), 'utf8');
+  fs.writeFileSync(manifestPath, safeJsonStringify(payload), 'utf8');
   const stat = fs.statSync(manifestPath);
   return { manifestPath, sizeMB: Number((stat.size / 1024 / 1024).toFixed(2)) };
 }
@@ -354,20 +425,11 @@ async function driverBackup(inst, policy, filePath) {
 }
 
 async function driverRestore(inst, task, backupRecord) {
-  const snapshot = await collectDbSnapshot(inst);
-  const planned = {
-    restoreType: task.RESTORE_TYPE,
-    targetTime: task.TARGET_TIME,
-    targetTable: task.TARGET_TABLE,
-    flashbackScn: task.FLASHBACK_SCN,
-    backupFile: backupRecord?.FILE_PATH || null,
-    connect: buildConnectString(inst),
-  };
+  await collectDbSnapshot(inst);
   return {
     ok: true,
-    detail: `驱动恢复预检通过 (${normalizeDbType(inst)} / ${task.RESTORE_TYPE})；计划动作: ${JSON.stringify(planned)}；实例连通正常`,
+    detail: buildRestoreDetail(inst, task, backupRecord),
     mode: 'driver',
-    snapshot,
   };
 }
 
@@ -565,6 +627,7 @@ async function executeRestoreTask(restoreId, opts = {}) {
 module.exports = {
   executeBackupPolicy,
   executeRestoreTask,
+  extractOracleOutBindNumber,
   resolveStorageRoot,
   normalizePolicyStoragePath,
   DEFAULT_LOCAL_BACKUP_ROOT,
