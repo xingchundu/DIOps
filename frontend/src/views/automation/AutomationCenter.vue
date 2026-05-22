@@ -704,6 +704,8 @@
       <div v-if="activeModule==='backup'">
         <el-tabs v-model="backupTab" type="card">
           <el-tab-pane label="备份策略" name="policies">
+            <el-alert type="info" :closable="true" style="margin-bottom:8px"
+              title="备份执行将按实例 DB 类型调用 scripts 模板（RMAN/mysqldump/pg_dump）；未安装客户端工具时自动回退为连通校验并生成备份清单" show-icon/>
             <div class="toolbar">
               <el-button native-type="button" :loading="bkPoliciesLoading" @click.prevent.stop="refreshBackupPolicies">
                 <el-icon class="el-icon--left"><Refresh /></el-icon>刷新
@@ -723,7 +725,7 @@
               <el-table-column v-if="canMutate" label="操作" width="160">
                 <template #default="{row}">
                   <el-button link type="primary" @click="openBkPolicyDlg(row)">编辑</el-button>
-                  <el-button link type="success" :loading="runningBk===row.POLICY_ID" @click="runBackupNow(row.POLICY_ID)">立即备份</el-button>
+                  <el-button link type="success" :loading="String(runningBk)===String(row.POLICY_ID)" @click.prevent="runBackupNow(row)">立即备份</el-button>
                   <el-button link type="danger" @click="deleteBkPolicy(row.POLICY_ID)">删除</el-button>
                 </template>
               </el-table-column>
@@ -1408,7 +1410,10 @@
             <el-option label="S3" value="S3"/><el-option label="OSS" value="OSS"/>
           </el-select>
         </el-form-item>
-        <el-form-item label="存储路径"><el-input v-model="bkPolicyForm.storagePath" placeholder="/backup/mysql"/></el-form-item>
+        <el-form-item label="存储路径">
+          <el-input v-model="bkPolicyForm.storagePath" :placeholder="bkStoragePathPlaceholder"/>
+          <div v-if="bkPolicyForm.storageType==='LOCAL'" class="form-hint">本地存储留空将使用平台目录 backend/data/backup；路径必须存在且可写</div>
+        </el-form-item>
         <el-form-item label="保留天数"><el-input-number v-model="bkPolicyForm.retentionDays" :min="1" :max="365"/></el-form-item>
         <el-form-item label="调度计划"><el-input v-model="bkPolicyForm.schedule" placeholder="0 2 * * *"/></el-form-item>
         <el-form-item label="压缩"><el-switch v-model="bkPolicyForm.compress"/></el-form-item>
@@ -1421,11 +1426,16 @@
     </el-dialog>
 
     <!-- 恢复任务 Dialog -->
-    <el-dialog v-model="restoreDlgVisible" title="新建恢复任务" width="520px">
+    <el-dialog v-model="restoreDlgVisible" title="新建恢复任务" width="560px">
       <el-form :model="restoreForm" label-width="100px" size="small">
         <el-form-item label="目标实例">
-          <el-select v-model="restoreForm.instanceId" style="width:100%">
+          <el-select v-model="restoreForm.instanceId" style="width:100%" @change="restoreForm.recordId=null">
             <el-option v-for="i in instances" :key="i.INSTANCE_ID" :label="i.INSTANCE_NAME" :value="i.INSTANCE_ID"/>
+          </el-select>
+        </el-form-item>
+        <el-form-item v-if="['FULL','SINGLE_TABLE'].includes(restoreForm.restoreType)" label="关联备份">
+          <el-select v-model="restoreForm.recordId" clearable placeholder="选择成功备份记录" style="width:100%">
+            <el-option v-for="r in bkRecordsForRestore" :key="r.RECORD_ID" :label="`${r.BACKUP_TYPE} ${fmtTime(r.CREATED_AT)} ${r.FILE_PATH||''}`" :value="r.RECORD_ID"/>
           </el-select>
         </el-form-item>
         <el-form-item label="恢复类型">
@@ -1445,11 +1455,13 @@
         <el-form-item v-if="restoreForm.restoreType==='FLASHBACK'" label="闪回SCN">
           <el-input v-model="restoreForm.flashbackScn" placeholder="Oracle SCN号"/>
         </el-form-item>
+        <el-alert type="info" :closable="false" style="margin-bottom:8px"
+          title="将按实例类型调用 backend/scripts/backup_restore 下 RMAN/mysqldump/pg_dump 等脚本；工具未安装时自动回退为连通校验+清单模式" show-icon/>
         <el-alert type="warning" :closable="false" title="恢复操作不可逆，请确认已评估影响范围并通知相关业务方" show-icon/>
       </el-form>
       <template #footer>
-        <el-button @click="restoreDlgVisible=false">取消</el-button>
-        <el-button type="danger" :loading="saving" @click="createRestore">创建并执行</el-button>
+        <el-button native-type="button" @click="restoreDlgVisible=false">取消</el-button>
+        <el-button type="danger" native-type="button" :loading="saving" @click.prevent="createRestore">创建并执行</el-button>
       </template>
     </el-dialog>
 
@@ -1738,9 +1750,16 @@ const bkStatsLoading = ref(false)
 const restoresLoading = ref(false)
 const runningBk = ref(null)
 const bkPolicyDlgVisible = ref(false)
-const bkPolicyForm = reactive({policyId:null,policyName:'',instanceId:null,backupType:'FULL',storageType:'LOCAL',storagePath:'/backup',retentionDays:7,schedule:'0 2 * * *',compress:true,encrypt:false})
+const bkPolicyForm = reactive({policyId:null,policyName:'',instanceId:null,backupType:'FULL',storageType:'LOCAL',storagePath:'',retentionDays:7,schedule:'0 2 * * *',compress:true,encrypt:false})
+const bkStoragePathPlaceholder = computed(() =>
+  bkPolicyForm.storageType === 'LOCAL' ? '留空=backend/data/backup，或填写本机可写绝对路径' : '填写挂载点或对象存储路径'
+)
 const restoreDlgVisible = ref(false)
-const restoreForm = reactive({instanceId:null,restoreType:'PITR',targetTime:'',targetTable:'',flashbackScn:''})
+const restoreForm = reactive({instanceId:null,recordId:null,restoreType:'FULL',targetTime:'',targetTable:'',flashbackScn:''})
+const bkRecordsForRestore = computed(() => {
+  if (!restoreForm.instanceId) return []
+  return bkRecords.value.filter(r => String(r.INSTANCE_ID) === String(restoreForm.instanceId) && r.STATUS === 'SUCCESS')
+})
 const hasBkStatsData = computed(() => {
   const s = bkStats.value
   if (!s || typeof s !== 'object') return false
@@ -2894,7 +2913,7 @@ async function refreshRestores() {
 }
 function openBkPolicyDlg(row) {
   if(row) Object.assign(bkPolicyForm,{policyId:row.POLICY_ID,policyName:row.POLICY_NAME,instanceId:row.INSTANCE_ID,backupType:row.BACKUP_TYPE,storageType:row.STORAGE_TYPE,storagePath:row.STORAGE_PATH,retentionDays:row.RETENTION_DAYS,schedule:row.SCHEDULE,compress:!!row.COMPRESS,encrypt:!!row.ENCRYPT})
-  else Object.assign(bkPolicyForm,{policyId:null,policyName:'',instanceId:null,backupType:'FULL',storageType:'LOCAL',storagePath:'/backup',retentionDays:7,schedule:'0 2 * * *',compress:true,encrypt:false})
+  else Object.assign(bkPolicyForm,{policyId:null,policyName:'',instanceId:null,backupType:'FULL',storageType:'LOCAL',storagePath:'',retentionDays:7,schedule:'0 2 * * *',compress:true,encrypt:false})
   bkPolicyDlgVisible.value=true
 }
 async function saveBkPolicy() {
@@ -2913,28 +2932,76 @@ async function deleteBkPolicy(id) {
   await ElMessageBox.confirm('确认删除备份策略？','提示',{type:'warning'}).catch(()=>{throw ''})
   await automationApi.deleteBackupPolicy(id); ElMessage.success('已删除'); loadBackupPolicies()
 }
-async function runBackupNow(id) {
-  runningBk.value=id
-  try { const r=await automationApi.runBackupPolicy(id); ElMessage.success(`${r.msg}  大小: ${r.data?.sizeMB}MB  耗时: ${r.data?.durationSec}s`); loadBackupPolicies(); loadBkRecords() }
-  catch {} finally { runningBk.value=null }
-}
-function openRestoreDlg() { Object.assign(restoreForm,{instanceId:null,restoreType:'PITR',targetTime:'',targetTable:'',flashbackScn:''}); restoreDlgVisible.value=true }
-async function createRestore() {
-  if(!restoreForm.instanceId) return ElMessage.warning('请选择实例')
-  await ElMessageBox.confirm('恢复操作不可逆，请确认已评估影响范围！','高危确认',{type:'error',confirmButtonText:'确认执行'}).catch(()=>{throw ''})
-  saving.value=true
+async function runBackupNow(row) {
+  const id = row?.POLICY_ID
+  if (id == null) return ElMessage.warning('无效的策略')
+  if (!row.INSTANCE_ID) return ElMessage.warning('请先在策略中指定目标实例后再执行备份')
+  runningBk.value = id
   try {
-    await automationApi.createRestoreTask(restoreForm)
-    const tasks = await automationApi.restoreTasks()
-    const newTask = tasks.data?.[0]
-    if(newTask) { await automationApi.executeRestoreTask(newTask.RESTORE_ID); ElMessage.success('恢复任务已执行') }
-    restoreDlgVisible.value=false; loadRestores()
-  } catch {} finally { saving.value=false }
+    const r = await automationApi.runBackupPolicy(id)
+    const isManifest = r.data?.backupResult === 'MANIFEST'
+    const sizeText = isManifest && r.data?.sizeKB != null && Number(r.data.sizeMB) < 0.01
+      ? `${r.data.sizeKB}KB`
+      : `${r.data?.sizeMB ?? 0}MB`
+    const extra = r.data?.detail ? ` — ${r.data.detail}` : ''
+    const text = `${r.msg || (isManifest ? '清单备份完成' : '备份成功')}  大小: ${sizeText}  耗时: ${r.data?.durationSec}s${extra}`
+    if (isManifest) ElMessage.warning(text)
+    else ElMessage.success(text)
+    loadBackupPolicies()
+    loadBkRecords()
+  } catch (e) {
+    ElMessage.error(e?.message || '立即备份失败')
+  } finally {
+    runningBk.value = null
+  }
+}
+function openRestoreDlg() {
+  Object.assign(restoreForm,{instanceId:null,recordId:null,restoreType:'FULL',targetTime:'',targetTable:'',flashbackScn:''})
+  restoreDlgVisible.value=true
+  loadBkRecords()
+}
+async function createRestore() {
+  if (!restoreForm.instanceId) return ElMessage.warning('请选择实例')
+  if (['FULL','SINGLE_TABLE'].includes(restoreForm.restoreType) && !restoreForm.recordId) return ElMessage.warning('请选择关联的成功备份记录')
+  if (restoreForm.restoreType === 'PITR' && !restoreForm.targetTime) return ElMessage.warning('PITR 恢复请指定目标时间')
+  if (restoreForm.restoreType === 'SINGLE_TABLE' && !restoreForm.targetTable?.trim()) return ElMessage.warning('单表恢复请填写目标表名')
+  if (restoreForm.restoreType === 'FLASHBACK' && !restoreForm.flashbackScn) return ElMessage.warning('闪回恢复请填写 SCN')
+  try {
+    await ElMessageBox.confirm('恢复操作不可逆，请确认已评估影响范围！', '高危确认', { type: 'error', confirmButtonText: '确认执行' })
+  } catch {
+    return
+  }
+  saving.value = true
+  try {
+    const created = await automationApi.createRestoreTask(restoreForm)
+    const restoreId = created.data?.restoreId
+    if (restoreId != null) {
+      const r = await automationApi.executeRestoreTask(restoreId)
+      const mode = r.data?.execMode ? ` [${r.data.execMode}]` : ''
+      ElMessage.success((r.msg || r.data?.detail || '恢复任务已执行') + mode)
+    } else {
+      ElMessage.success(created.msg || '恢复任务已创建')
+    }
+    restoreDlgVisible.value = false
+    loadRestores()
+  } catch (e) {
+    ElMessage.error(e?.message || '创建恢复任务失败')
+  } finally {
+    saving.value = false
+  }
 }
 async function executeRestore(id) {
-  await ElMessageBox.confirm('确认执行此恢复任务？','确认',{type:'warning'}).catch(()=>{throw ''})
-  const r = await automationApi.executeRestoreTask(id)
-  ElMessage.success(r.data?.detail||'恢复成功'); loadRestores()
+  try {
+    await ElMessageBox.confirm('确认执行此恢复任务？','确认',{type:'warning'})
+  } catch { return }
+  try {
+    const r = await automationApi.executeRestoreTask(id)
+    const mode = r.data?.execMode ? ` [${r.data.execMode}]` : ''
+    ElMessage.success((r.data?.detail || r.msg || '恢复成功') + mode)
+    loadRestores()
+  } catch (e) {
+    ElMessage.error(e?.message || '恢复执行失败')
+  }
 }
 
 /** CMDB 实例列表（分页接口返回 { list, total }，需取 list；拉足条数供各下拉使用） */
@@ -2999,6 +3066,7 @@ onMounted(async () => {
 .dr-delay    { font-size:13px; font-weight:600 }
 .dr-arrow    { font-size:20px; color:#606266 }
 .stats-cards { display:flex; gap:12px; flex-wrap:wrap; margin-bottom:16px }
+.form-hint   { font-size:12px; color:#909399; margin-top:4px; line-height:1.4 }
 .stat-card   { min-width:140px; text-align:center }
 .stat-title  { font-size:12px; color:#909399; margin-bottom:4px }
 .stat-value  { font-size:24px; font-weight:700 }

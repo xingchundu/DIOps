@@ -7,6 +7,7 @@ const db = require('../config/db');
 const { runInspectBatchById } = require('./automationInspectBatchRun');
 const { runInspectTaskById } = require('./inspectTaskRun');
 const { automationLog } = require('./automationExecLog');
+const { executeBackupPolicy } = require('./backupRestoreRunner');
 
 /** @type {Map<string, { task: import('node-cron').ScheduledTask, expr: string, label: string, kind: string }>} */
 const entries = new Map();
@@ -158,18 +159,38 @@ async function reloadCronJobsFromDb() {
   clearPrefix('backup:');
   const qp = await db.execute(
     `SELECT POLICY_ID, POLICY_NAME, INSTANCE_ID, BACKUP_TYPE, SCHEDULE
-     FROM BACKUP_POLICY WHERE NVL(ENABLED,1)=1 AND SCHEDULE IS NOT NULL AND LENGTH(TRIM(SCHEDULE)) > 0`,
+     FROM BACKUP_POLICY_PRO WHERE NVL(ENABLED,1)=1 AND SCHEDULE IS NOT NULL AND LENGTH(TRIM(SCHEDULE)) > 0`,
     []
-  );
+  ).catch(() => ({ rows: [] }));
   for (const row of qp.rows || []) {
     const expr = normalizeCron(row.SCHEDULE);
     if (!expr) continue;
     const key = `backup:${row.POLICY_ID}`;
     const pid = Number(row.POLICY_ID);
+    const ok = registerValidated(key, expr, row.POLICY_NAME || `policy${pid}`, 'BACKUP_POLICY_PRO', () => {
+      executeBackupPolicy(pid, { triggerType: 'SCHEDULED', userId: null })
+        .then((out) => console.log('[automation-scheduler] backup policy', pid, out.execMode, out.detail || out.msg))
+        .catch((e) => {
+          console.error('[automation-scheduler] backup policy', pid, e.message || e);
+          automationLog(schedulerReq(), 'BACKUP', pid, 'CRON_TICK', 'FAILED', (e.message || String(e)).slice(0, 450));
+        });
+    });
+    if (!ok) console.warn('[automation-scheduler] 无效 Cron（备份策略 Pro）', pid, expr);
+  }
+  const qpLegacy = await db.execute(
+    `SELECT POLICY_ID, POLICY_NAME, INSTANCE_ID, BACKUP_TYPE, SCHEDULE
+     FROM BACKUP_POLICY WHERE NVL(ENABLED,1)=1 AND SCHEDULE IS NOT NULL AND LENGTH(TRIM(SCHEDULE)) > 0`,
+    []
+  ).catch(() => ({ rows: [] }));
+  for (const row of qpLegacy.rows || []) {
+    const expr = normalizeCron(row.SCHEDULE);
+    if (!expr) continue;
+    const key = `backup:legacy:${row.POLICY_ID}`;
+    const pid = Number(row.POLICY_ID);
     const ok = registerValidated(key, expr, row.POLICY_NAME || `policy${pid}`, 'BACKUP_POLICY', () => {
       simulatedBackupTick(row);
     });
-    if (!ok) console.warn('[automation-scheduler] 无效 Cron（备份策略）', pid, expr);
+    if (!ok) console.warn('[automation-scheduler] 无效 Cron（备份策略旧表）', pid, expr);
   }
 
   clearPrefix('space:');

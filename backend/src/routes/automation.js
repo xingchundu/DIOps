@@ -10,6 +10,12 @@ const multer = require('multer');
 const db = require('../config/db');
 const { authMiddleware, requireRole } = require('../middleware/auth');
 const { automationLog } = require('../services/automationExecLog');
+const {
+  executeBackupPolicy,
+  executeRestoreTask,
+  normalizePolicyStoragePath,
+  resolveStorageRoot,
+} = require('../services/backupRestoreRunner');
 const { getSchedulerStatusPayload } = require('../services/automationScheduler');
 const { runInspectTaskById } = require('../services/inspectTaskRun');
 const { buildGenericInspectDocxBuffer } = require('../services/inspectGenericReportDocx');
@@ -1914,8 +1920,13 @@ router.post('/backup/policies', adminDba, async (req,res) => {
   const{policyName,instanceId,backupType,storageType,storagePath,retentionDays,compress,encrypt,schedule}=req.body;
   if(!policyName||!backupType)return res.json({code:400,msg:'策略名/备份类型必填'});
   try{
+    const st=storageType||'LOCAL';
+    const sp=normalizePolicyStoragePath(st,storagePath);
+    if(['LOCAL','NFS'].includes(String(st).toUpperCase())){
+      resolveStorageRoot({STORAGE_TYPE:st,STORAGE_PATH:sp},{validateWrite:true});
+    }
     await db.execute(`INSERT INTO BACKUP_POLICY_PRO (POLICY_NAME,INSTANCE_ID,BACKUP_TYPE,STORAGE_TYPE,STORAGE_PATH,RETENTION_DAYS,"COMPRESS",ENCRYPT,SCHEDULE,CREATED_BY) VALUES (:1,:2,:3,:4,:5,:6,:7,:8,:9,:10)`,
-      [policyName,instanceId||null,backupType,storageType||'LOCAL',storagePath||'/backup',retentionDays||7,compress?1:0,encrypt?1:0,schedule||'0 2 * * *',req.user.userId]);
+      [policyName,instanceId||null,backupType,st,sp,retentionDays||7,compress?1:0,encrypt?1:0,schedule||'0 2 * * *',req.user.userId]);
     await automationLog(req,'BACKUP',null,'CREATE_POLICY','SUCCESS',policyName);
     res.json({code:200,msg:'备份策略已创建'});
   }catch(e){res.json({code:500,msg:e.message});}
@@ -1934,18 +1945,14 @@ router.delete('/backup/policies/:id', adminDba, async (req,res) => {
 });
 router.post('/backup/policies/:id/run', adminDbaOps, async (req,res) => {
   try{
-    const pr=await db.execute(`SELECT * FROM BACKUP_POLICY_PRO WHERE POLICY_ID=:1`,[req.params.id]);
-    if(!pr.rows.length)return res.json({code:404,msg:'策略不存在'});
-    const p=pr.rows[0];
-    const filePath=`${p.STORAGE_PATH||'/backup'}/${p.INSTANCE_ID||'inst'}_${p.BACKUP_TYPE}_${new Date().toISOString().replace(/[:.]/g,'')}.bak`;
-    const sizeMB=(Math.random()*10240+1024).toFixed(2);
-    const durationSec=Math.floor(Math.random()*600+60);
-    await db.execute(`INSERT INTO BACKUP_RECORD_PRO (POLICY_ID,INSTANCE_ID,BACKUP_TYPE,STATUS,FILE_PATH,FILE_SIZE_MB,START_TIME,END_TIME,DURATION_SEC,TRIGGER_TYPE,CREATED_BY) VALUES (:1,:2,:3,'SUCCESS',:4,:5,SYSTIMESTAMP-:6/86400,SYSTIMESTAMP,:6,'MANUAL',:7)`,
-      [req.params.id,p.INSTANCE_ID,p.BACKUP_TYPE,filePath,sizeMB,durationSec,req.user.userId]);
-    await db.execute(`UPDATE BACKUP_POLICY_PRO SET LAST_RUN_AT=SYSTIMESTAMP WHERE POLICY_ID=:1`,[req.params.id]);
-    await automationLog(req,'BACKUP',Number(req.params.id),'RUN_BACKUP','SUCCESS',`${p.BACKUP_TYPE} ${(sizeMB/1024).toFixed(2)}GB`);
-    res.json({code:200,msg:'备份成功',data:{filePath,sizeMB,durationSec}});
-  }catch(e){res.json({code:500,msg:e.message});}
+    const out=await executeBackupPolicy(req.params.id,{triggerType:'MANUAL',userId:req.user?.userId??null});
+    await automationLog(req,'BACKUP',Number(req.params.id),'RUN_BACKUP','SUCCESS',out.detail||out.msg);
+    res.json({code:200,msg:out.msg||'备份成功',data:{filePath:out.filePath,sizeMB:out.sizeMB,sizeKB:out.sizeKB,backupResult:out.backupResult,durationSec:out.durationSec,execMode:out.execMode,detail:out.detail}});
+  }catch(e){
+    const code=e.code==='NOT_FOUND'?404:e.code==='BAD_REQUEST'?400:e.code==='BACKUP_FAILED'?500:500;
+    await automationLog(req,'BACKUP',Number(req.params.id),'RUN_BACKUP','FAILED',(e.message||'').slice(0,450)).catch(()=>{});
+    res.json({code,msg:e.message});
+  }
 });
 router.get('/backup/records', async (req,res) => {
   const{instanceId,status,backupType}=req.query; const binds=[]; let sql=`SELECT r.*,p.POLICY_NAME,i.INSTANCE_NAME FROM BACKUP_RECORD_PRO r LEFT JOIN BACKUP_POLICY_PRO p ON r.POLICY_ID=p.POLICY_ID LEFT JOIN CMDB_INSTANCE i ON r.INSTANCE_ID=i.INSTANCE_ID WHERE 1=1`;
@@ -1971,24 +1978,44 @@ router.post('/backup/restores', adminDba, async (req,res) => {
   const{recordId,instanceId,restoreType,targetTime,targetTable,flashbackScn}=req.body;
   if(!instanceId||!restoreType)return res.json({code:400,msg:'instanceId/restoreType必填'});
   if(restoreType==='PITR'&&!targetTime)return res.json({code:400,msg:'PITR恢复必须指定目标时间'});
+  if(restoreType==='SINGLE_TABLE'&&!targetTable)return res.json({code:400,msg:'单表恢复必须指定目标表名'});
+  if(restoreType==='FLASHBACK'&&!flashbackScn)return res.json({code:400,msg:'闪回恢复必须指定SCN'});
+  if(['FULL','SINGLE_TABLE'].includes(restoreType)&&!recordId)return res.json({code:400,msg:'全量/单表恢复必须选择关联备份记录'});
   try{
-    await db.execute(`INSERT INTO RESTORE_TASK (RECORD_ID,INSTANCE_ID,RESTORE_TYPE,TARGET_TIME,TARGET_TABLE,FLASHBACK_SCN,STATUS,CREATED_BY) VALUES (:1,:2,:3,:4,:5,:6,'PENDING',:7)`,
-      [recordId||null,instanceId,restoreType,targetTime||null,targetTable||null,flashbackScn||null,req.user.userId]);
-    await automationLog(req,'BACKUP',null,'CREATE_RESTORE','SUCCESS',`${restoreType}`);
-    res.json({code:200,msg:'恢复任务已创建'});
+    const outId = { dir: oracledb.BIND_OUT, type: oracledb.NUMBER };
+    const binds = {
+      recordId: recordId || null,
+      instanceId,
+      restoreType,
+      targetTime: targetTime || null,
+      targetTable: targetTable || null,
+      flashbackScn: flashbackScn != null && flashbackScn !== '' ? Number(flashbackScn) : null,
+      createdBy: req.user?.userId ?? null,
+      outId,
+    };
+    const ins = await db.execute(
+      `INSERT INTO RESTORE_TASK (RECORD_ID,INSTANCE_ID,RESTORE_TYPE,TARGET_TIME,TARGET_TABLE,FLASHBACK_SCN,STATUS,CREATED_BY)
+       VALUES (:recordId,:instanceId,:restoreType,
+         CASE WHEN :targetTime IS NOT NULL THEN TO_TIMESTAMP(:targetTime,'YYYY-MM-DD HH24:MI:SS') END,
+         :targetTable,:flashbackScn,'PENDING',:createdBy)
+       RETURNING RESTORE_ID INTO :outId`,
+      binds
+    );
+    const restoreId = ins.outBinds?.outId?.[0] ?? ins.outBinds?.outId ?? binds.outId?.val;
+    await automationLog(req,'BACKUP',restoreId ?? null,'CREATE_RESTORE','SUCCESS',`${restoreType}`);
+    res.json({code:200,msg:'恢复任务已创建',data:{restoreId}});
   }catch(e){res.json({code:500,msg:e.message});}
 });
 router.post('/backup/restores/:id/execute', adminDba, async (req,res) => {
   try{
-    const rr=await db.execute(`SELECT * FROM RESTORE_TASK WHERE RESTORE_ID=:1`,[req.params.id]);
-    if(!rr.rows.length)return res.json({code:404,msg:'恢复任务不存在'});
-    const task=rr.rows[0];
-    const msgs={PITR:`PITR恢复至 ${task.TARGET_TIME||'目标时间点'} 成功`,SINGLE_TABLE:`单表 ${task.TARGET_TABLE||''} 恢复成功`,FLASHBACK:`闪回 SCN ${task.FLASHBACK_SCN||''} 成功`,FULL:'全量恢复成功'};
-    const detail=msgs[task.RESTORE_TYPE]||'恢复完成';
-    await db.execute(`UPDATE RESTORE_TASK SET STATUS='SUCCESS',RESULT=:1,FINISHED_AT=SYSTIMESTAMP WHERE RESTORE_ID=:2`,[detail,req.params.id]);
-    await automationLog(req,'BACKUP',Number(req.params.id),'EXECUTE_RESTORE','SUCCESS',detail);
-    res.json({code:200,msg:'恢复成功',data:{detail}});
-  }catch(e){res.json({code:500,msg:e.message});}
+    const out=await executeRestoreTask(req.params.id,{userId:req.user?.userId??null});
+    await automationLog(req,'BACKUP',Number(req.params.id),'EXECUTE_RESTORE','SUCCESS',(out.detail||'').slice(0,450));
+    res.json({code:200,msg:out.msg||'恢复成功',data:{detail:out.detail,execMode:out.execMode,durationSec:out.durationSec}});
+  }catch(e){
+    const code=e.code==='NOT_FOUND'?404:e.code==='BAD_REQUEST'?400:500;
+    await automationLog(req,'BACKUP',Number(req.params.id),'EXECUTE_RESTORE','FAILED',(e.message||'').slice(0,450)).catch(()=>{});
+    res.json({code,msg:e.message});
+  }
 });
 
 // ── Python 环境诊断接口（帮助排查 exit=9009 等问题）────────────
