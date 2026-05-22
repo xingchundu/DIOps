@@ -1914,8 +1914,8 @@ router.post('/backup/policies', adminDba, async (req,res) => {
   const{policyName,instanceId,backupType,storageType,storagePath,retentionDays,compress,encrypt,schedule}=req.body;
   if(!policyName||!backupType)return res.json({code:400,msg:'策略名/备份类型必填'});
   try{
-    await db.execute(`INSERT INTO BACKUP_POLICY_PRO (POLICY_NAME,INSTANCE_ID,BACKUP_TYPE,STORAGE_TYPE,STORAGE_PATH,RETENTION_DAYS,COMPRESS,ENCRYPT,SCHEDULE,CREATED_BY) VALUES (:1,:2,:3,:4,:5,:6,:7,:8,:9,:10)`,
-      [policyName,instanceId||null,backupType,storageType||'LOCAL',storagePath||'/backup',retentionDays||7,compress?1:1,encrypt?1:0,schedule||'0 2 * * *',req.user.userId]);
+    await db.execute(`INSERT INTO BACKUP_POLICY_PRO (POLICY_NAME,INSTANCE_ID,BACKUP_TYPE,STORAGE_TYPE,STORAGE_PATH,RETENTION_DAYS,"COMPRESS",ENCRYPT,SCHEDULE,CREATED_BY) VALUES (:1,:2,:3,:4,:5,:6,:7,:8,:9,:10)`,
+      [policyName,instanceId||null,backupType,storageType||'LOCAL',storagePath||'/backup',retentionDays||7,compress?1:0,encrypt?1:0,schedule||'0 2 * * *',req.user.userId]);
     await automationLog(req,'BACKUP',null,'CREATE_POLICY','SUCCESS',policyName);
     res.json({code:200,msg:'备份策略已创建'});
   }catch(e){res.json({code:500,msg:e.message});}

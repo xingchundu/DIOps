@@ -1415,8 +1415,8 @@
         <el-form-item label="加密"><el-switch v-model="bkPolicyForm.encrypt"/></el-form-item>
       </el-form>
       <template #footer>
-        <el-button @click="bkPolicyDlgVisible=false">取消</el-button>
-        <el-button type="primary" :loading="saving" @click="saveBkPolicy">保存</el-button>
+        <el-button native-type="button" @click="bkPolicyDlgVisible=false">取消</el-button>
+        <el-button type="primary" native-type="button" :loading="saving" @click.prevent="saveBkPolicy">保存</el-button>
       </template>
     </el-dialog>
 
@@ -2898,13 +2898,16 @@ function openBkPolicyDlg(row) {
   bkPolicyDlgVisible.value=true
 }
 async function saveBkPolicy() {
-  if(!bkPolicyForm.policyName||!bkPolicyForm.backupType) return ElMessage.warning('策略名/类型必填')
+  if(!bkPolicyForm.policyName?.trim()) return ElMessage.warning('请填写策略名称')
+  if(!bkPolicyForm.backupType) return ElMessage.warning('请选择备份类型')
   saving.value=true
   try {
     if(bkPolicyForm.policyId) await automationApi.updateBackupPolicy(bkPolicyForm.policyId,bkPolicyForm)
     else await automationApi.createBackupPolicy(bkPolicyForm)
     ElMessage.success('保存成功'); bkPolicyDlgVisible.value=false; loadBackupPolicies()
-  } catch {} finally { saving.value=false }
+  } catch (e) {
+    ElMessage.error(e?.message || '保存备份策略失败')
+  } finally { saving.value=false }
 }
 async function deleteBkPolicy(id) {
   await ElMessageBox.confirm('确认删除备份策略？','提示',{type:'warning'}).catch(()=>{throw ''})
