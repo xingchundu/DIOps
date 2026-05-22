@@ -1912,9 +1912,9 @@ router.post('/capacity/cost-analysis/run', adminDbaOps, async (req,res) => {
   }catch(e){res.json({code:500,msg:e.message});}
 });
 
-// §8 备份恢复中心
+// §8 备份恢复中心（查询结果经 toPlainJson 序列化，避免 Oracle 驱动 TIMESTAMP/LOB 等循环引用）
 router.get('/backup/policies', async (req,res) => {
-  try{const r=await db.execute(`SELECT p.*,i.INSTANCE_NAME FROM BACKUP_POLICY_PRO p LEFT JOIN CMDB_INSTANCE i ON p.INSTANCE_ID=i.INSTANCE_ID ORDER BY p.POLICY_ID DESC`,[]);res.json({code:200,data:r.rows});}
+  try{const r=await db.execute(`SELECT p.*,i.INSTANCE_NAME FROM BACKUP_POLICY_PRO p LEFT JOIN CMDB_INSTANCE i ON p.INSTANCE_ID=i.INSTANCE_ID ORDER BY p.POLICY_ID DESC`,[]);res.json({code:200,data:toPlainJson(r.rows)});}
   catch(e){res.json({code:500,msg:e.message});}
 });
 router.post('/backup/policies', adminDba, async (req,res) => {
@@ -1948,7 +1948,7 @@ router.post('/backup/policies/:id/run', adminDbaOps, async (req,res) => {
   try{
     const out=await executeBackupPolicy(req.params.id,{triggerType:'MANUAL',userId:req.user?.userId??null});
     await automationLog(req,'BACKUP',Number(req.params.id),'RUN_BACKUP','SUCCESS',out.detail||out.msg);
-    res.json({code:200,msg:out.msg||'备份成功',data:{filePath:out.filePath,sizeMB:out.sizeMB,sizeKB:out.sizeKB,backupResult:out.backupResult,durationSec:out.durationSec,execMode:out.execMode,detail:out.detail}});
+    res.json({code:200,msg:out.msg||'备份成功',data:toPlainJson({filePath:out.filePath,sizeMB:out.sizeMB,sizeKB:out.sizeKB,backupResult:out.backupResult,durationSec:out.durationSec,execMode:out.execMode,detail:out.detail})});
   }catch(e){
     const code=e.code==='NOT_FOUND'?404:e.code==='BAD_REQUEST'?400:e.code==='BACKUP_FAILED'?500:500;
     await automationLog(req,'BACKUP',Number(req.params.id),'RUN_BACKUP','FAILED',(e.message||'').slice(0,450)).catch(()=>{});
@@ -1961,18 +1961,18 @@ router.get('/backup/records', async (req,res) => {
   if(status){sql+=` AND r.STATUS=:${binds.length+1}`;binds.push(status);}
   if(backupType){sql+=` AND r.BACKUP_TYPE=:${binds.length+1}`;binds.push(backupType);}
   sql+=` ORDER BY r.CREATED_AT DESC FETCH NEXT 100 ROWS ONLY`;
-  try{const r=await db.execute(sql,binds);res.json({code:200,data:r.rows});}
+  try{const r=await db.execute(sql,binds);res.json({code:200,data:toPlainJson(r.rows)});}
   catch(e){res.json({code:500,msg:e.message});}
 });
 router.get('/backup/stats', async (req,res) => {
   try{
     const stats=await db.execute(`SELECT STATUS,COUNT(*) CNT,ROUND(AVG(DURATION_SEC),1) AVG_DUR,ROUND(SUM(FILE_SIZE_MB)/1024,2) TOTAL_GB FROM BACKUP_RECORD_PRO WHERE CREATED_AT>=SYSDATE-30 GROUP BY STATUS`,[]);
     const top=await db.execute(`SELECT r.INSTANCE_ID,i.INSTANCE_NAME,COUNT(*) FAIL_CNT FROM BACKUP_RECORD_PRO r LEFT JOIN CMDB_INSTANCE i ON r.INSTANCE_ID=i.INSTANCE_ID WHERE r.STATUS='FAILED' AND r.CREATED_AT>=SYSDATE-7 GROUP BY r.INSTANCE_ID,i.INSTANCE_NAME ORDER BY FAIL_CNT DESC FETCH NEXT 5 ROWS ONLY`,[]);
-    res.json({code:200,data:{statusSummary:stats.rows,topFailures:top.rows}});
+    res.json({code:200,data:{statusSummary:toPlainJson(stats.rows),topFailures:toPlainJson(top.rows)}});
   }catch(e){res.json({code:500,msg:e.message});}
 });
 router.get('/backup/restores', async (req,res) => {
-  try{const r=await db.execute(`SELECT t.*,br.FILE_PATH,i.INSTANCE_NAME,u.REAL_NAME OPERATOR FROM RESTORE_TASK t LEFT JOIN BACKUP_RECORD_PRO br ON t.RECORD_ID=br.RECORD_ID LEFT JOIN CMDB_INSTANCE i ON t.INSTANCE_ID=i.INSTANCE_ID LEFT JOIN SYS_USER u ON t.CREATED_BY=u.USER_ID ORDER BY t.CREATED_AT DESC FETCH NEXT 50 ROWS ONLY`,[]);res.json({code:200,data:r.rows});}
+  try{const r=await db.execute(`SELECT t.*,br.FILE_PATH,i.INSTANCE_NAME,u.REAL_NAME OPERATOR FROM RESTORE_TASK t LEFT JOIN BACKUP_RECORD_PRO br ON t.RECORD_ID=br.RECORD_ID LEFT JOIN CMDB_INSTANCE i ON t.INSTANCE_ID=i.INSTANCE_ID LEFT JOIN SYS_USER u ON t.CREATED_BY=u.USER_ID ORDER BY t.CREATED_AT DESC FETCH NEXT 50 ROWS ONLY`,[]);res.json({code:200,data:toPlainJson(r.rows)});}
   catch(e){res.json({code:500,msg:e.message});}
 });
 router.post('/backup/restores', adminDba, async (req,res) => {
@@ -2005,14 +2005,14 @@ router.post('/backup/restores', adminDba, async (req,res) => {
     const restoreId = extractOracleOutBindNumber(ins, 'outId');
     if (restoreId == null) return res.json({ code: 500, msg: '恢复任务创建失败：未获取 RESTORE_ID' });
     await automationLog(req,'BACKUP',restoreId,'CREATE_RESTORE','SUCCESS',`${restoreType}`);
-    res.json({code:200,msg:'恢复任务已创建',data:{restoreId}});
+    res.json({code:200,msg:'恢复任务已创建',data:toPlainJson({restoreId})});
   }catch(e){res.json({code:500,msg:e.message});}
 });
 router.post('/backup/restores/:id/execute', adminDba, async (req,res) => {
   try{
     const out=await executeRestoreTask(req.params.id,{userId:req.user?.userId??null});
     await automationLog(req,'BACKUP',Number(req.params.id),'EXECUTE_RESTORE','SUCCESS',(out.detail||'').slice(0,450));
-    res.json({code:200,msg:out.msg||'恢复成功',data:{detail:out.detail,execMode:out.execMode,durationSec:out.durationSec}});
+    res.json({code:200,msg:out.msg||'恢复成功',data:toPlainJson({detail:out.detail,execMode:out.execMode,durationSec:out.durationSec})});
   }catch(e){
     const code=e.code==='NOT_FOUND'?404:e.code==='BAD_REQUEST'?400:500;
     await automationLog(req,'BACKUP',Number(req.params.id),'EXECUTE_RESTORE','FAILED',(e.message||'').slice(0,450)).catch(()=>{});

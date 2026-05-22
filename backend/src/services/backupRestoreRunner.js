@@ -179,15 +179,18 @@ function safeJsonStringify(obj) {
   });
 }
 
-/** 解析 INSERT RETURNING 的 NUMBER 出参，避免把 BIND_OUT 对象返回给前端 */
+/** 解析 INSERT RETURNING 的 NUMBER 出参，避免把 BIND_OUT / 连接描述对象返回给前端 */
 function extractOracleOutBindNumber(result, bindName) {
   const raw = result?.outBinds?.[bindName];
-  if (Array.isArray(raw) && raw.length > 0) {
-    const n = Number(raw[0]);
+  if (raw == null) return null;
+  const pick = Array.isArray(raw) ? raw[0] : raw;
+  if (pick == null) return null;
+  if (typeof pick === 'object') {
+    const n = Number(pick);
     return Number.isFinite(n) ? n : null;
   }
-  if (typeof raw === 'number' && Number.isFinite(raw)) return raw;
-  return null;
+  const n = Number(pick);
+  return Number.isFinite(n) ? n : null;
 }
 
 function buildRestoreDetail(inst, task, backupRecord) {
