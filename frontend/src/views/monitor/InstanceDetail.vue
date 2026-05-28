@@ -71,6 +71,37 @@
               <el-empty v-else description="实例信息获取失败（检查 CMDB 连接串与账号权限）" />
             </el-col>
           </el-row>
+          <!-- 多维度健康评分 -->
+          <el-divider content-position="left">多维度健康评分</el-divider>
+          <el-row :gutter="24" v-if="healthDetail?.dimensions">
+            <el-col :span="10">
+              <div ref="healthRadarRef" style="height:260px"></div>
+            </el-col>
+            <el-col :span="14">
+              <div v-for="dimKey in ['connectivity','performance','load','resource']" :key="dimKey"
+                   style="margin-bottom:16px">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
+                  <span style="font-size:13px;font-weight:600;color:#303133">
+                    {{ healthDetail.dimensions[dimKey]?.label || dimKey }}
+                    <el-tag size="small" type="info" style="margin-left:4px">权重 {{ healthDetail.dimensions[dimKey]?.weight }}%</el-tag>
+                  </span>
+                  <span :style="{ color: scoreDimColor(healthDetail.dimensions[dimKey]?.score), fontWeight: 700, fontSize: '16px' }">
+                    {{ healthDetail.dimensions[dimKey]?.score }}
+                  </span>
+                </div>
+                <el-progress
+                  :percentage="healthDetail.dimensions[dimKey]?.score || 0"
+                  :color="scoreDimColor(healthDetail.dimensions[dimKey]?.score)"
+                  :stroke-width="12"
+                  :show-text="false"
+                />
+                <div style="font-size:11px;color:#909399;margin-top:2px">
+                  {{ healthDetail.dimensions[dimKey]?.detail }}
+                </div>
+              </div>
+            </el-col>
+          </el-row>
+          <el-empty v-else-if="!healthDetailLoading" description="暂无健康评分数据，请等待下次采集" />
         </div>
       </el-tab-pane>
 
@@ -248,8 +279,136 @@
         </div>
       </el-tab-pane>
 
-      <!-- ⑧ AWR快照 -->
-      <el-tab-pane label="⑧ AWR快照" name="awr" v-if="isOracle">
+      <!-- ⑧ 等待事件分析 -->
+      <el-tab-pane label="⑧ 等待事件" name="waits">
+        <div class="card" v-loading="waitsLoading">
+          <div class="card-title" style="justify-content:space-between">
+            <span><el-icon><Odometer /></el-icon> 等待事件分析</span>
+            <el-button size="small" icon="Refresh" @click="loadWaits">刷新</el-button>
+          </div>
+          <el-row :gutter="16" class="mb-16">
+            <el-col :span="12">
+              <div class="sub-title">等待时间分布（按等待类）</div>
+              <div ref="waitClassChartRef" style="height:260px"></div>
+            </el-col>
+            <el-col :span="12">
+              <div class="sub-title">Top 10 等待事件（按累计等待时间）</div>
+              <div ref="waitEventChartRef" style="height:260px"></div>
+            </el-col>
+          </el-row>
+          <div class="sub-title">全部等待事件明细</div>
+          <el-table :data="allWaits" stripe border size="small" max-height="380">
+            <el-table-column prop="EVENT" label="等待事件" min-width="220" show-overflow-tooltip />
+            <el-table-column prop="WAIT_CLASS" label="等待类" width="130">
+              <template #default="{ row }">
+                <el-tag size="small" :type="waitClassColor(row.WAIT_CLASS)">{{ row.WAIT_CLASS }}</el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column prop="TOTAL_WAITS" label="总等待次数" width="120" align="right">
+              <template #default="{ row }">{{ row.TOTAL_WAITS?.toLocaleString() }}</template>
+            </el-table-column>
+            <el-table-column prop="TOTAL_TIMEOUTS" label="超时次数" width="100" align="right">
+              <template #default="{ row }">{{ row.TOTAL_TIMEOUTS?.toLocaleString() }}</template>
+            </el-table-column>
+            <el-table-column prop="TIME_WAITED_SEC" label="累计等待(s)" width="120" align="right">
+              <template #default="{ row }">
+                <span :style="{ color: row.TIME_WAITED_SEC > 100 ? '#F56C6C' : row.TIME_WAITED_SEC > 10 ? '#E6A23C' : '' }">
+                  {{ row.TIME_WAITED_SEC?.toLocaleString() }}
+                </span>
+              </template>
+            </el-table-column>
+            <el-table-column prop="AVG_WAIT_MS" label="平均等待(ms)" width="120" align="right">
+              <template #default="{ row }">
+                <span :style="{ color: row.AVG_WAIT_MS > 100 ? '#F56C6C' : row.AVG_WAIT_MS > 10 ? '#E6A23C' : '' }">
+                  {{ row.AVG_WAIT_MS?.toFixed(2) }}
+                </span>
+              </template>
+            </el-table-column>
+            <el-table-column label="超时率" width="100" align="right">
+              <template #default="{ row }">
+                <span v-if="row.TOTAL_WAITS > 0" :style="{ color: (row.TOTAL_TIMEOUTS / row.TOTAL_WAITS) > 0.1 ? '#F56C6C' : '' }">
+                  {{ ((row.TOTAL_TIMEOUTS / row.TOTAL_WAITS) * 100).toFixed(1) }}%
+                </span>
+                <span v-else>-</span>
+              </template>
+            </el-table-column>
+          </el-table>
+        </div>
+      </el-tab-pane>
+
+      <!-- ⑨ 锁分析 -->
+      <el-tab-pane label="⑨ 锁分析" name="locks" v-if="isOracle">
+        <div class="card" v-loading="locksLoading">
+          <div class="card-title" style="justify-content:space-between">
+            <span><el-icon><Lock /></el-icon> 锁分析（Oracle V$LOCK）</span>
+            <el-button size="small" icon="Refresh" @click="loadLocks">刷新</el-button>
+          </div>
+          <el-alert v-if="locks.length === 0 && !locksLoading" type="success" :closable="false" show-icon class="mb-16">
+            当前无锁等待，数据库运行正常
+          </el-alert>
+          <template v-else>
+            <el-alert type="warning" :closable="false" show-icon class="mb-16">
+              检测到 {{ locks.length }} 组锁等待，请关注持有者会话
+            </el-alert>
+            <div class="sub-title">锁等待链</div>
+            <div class="lock-chain mb-16">
+              <div v-for="(lk, idx) in locks" :key="idx" class="lock-chain-item">
+                <div class="lock-node lock-holder">
+                  <div class="lock-node-title">持有者</div>
+                  <div class="lock-node-body">
+                    <span class="lock-sid">SID={{ lk.HOLDER_SID }}</span>
+                    <span class="lock-user">{{ lk.HOLDER_USER || '-' }}</span>
+                    <span class="lock-prog">{{ lk.HOLDER_PROG || '-' }}</span>
+                  </div>
+                </div>
+                <div class="lock-arrow">
+                  <el-icon size="20" color="#E6A23C"><Right /></el-icon>
+                  <span class="lock-wait-info">阻塞 {{ lk.WAIT_MIN }} 分钟</span>
+                </div>
+                <div class="lock-node lock-waiter">
+                  <div class="lock-node-title">等待者</div>
+                  <div class="lock-node-body">
+                    <span class="lock-sid">SID={{ lk.WAITER_SID }}</span>
+                    <span class="lock-user">{{ lk.WAITER_USER || '-' }}</span>
+                    <span class="lock-prog">{{ lk.WAITER_PROG || '-' }}</span>
+                  </div>
+                </div>
+                <el-tag size="small" type="info" class="lock-event-tag">{{ lk.WAIT_EVENT || '-' }}</el-tag>
+              </div>
+            </div>
+          </template>
+          <div class="sub-title">锁等待明细</div>
+          <el-table :data="locks" stripe border size="small">
+            <el-table-column label="持有者 SID" width="100" align="center">
+              <template #default="{ row }">
+                <el-tag type="danger" size="small">{{ row.HOLDER_SID }}</el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column prop="HOLDER_SERIAL" label="Serial#" width="80" />
+            <el-table-column prop="HOLDER_USER" label="持有者用户" width="120" />
+            <el-table-column prop="HOLDER_PROG" label="持有者程序" min-width="160" show-overflow-tooltip />
+            <el-table-column label="等待者 SID" width="100" align="center">
+              <template #default="{ row }">
+                <el-tag type="warning" size="small">{{ row.WAITER_SID }}</el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column prop="WAITER_SERIAL" label="Serial#" width="80" />
+            <el-table-column prop="WAITER_USER" label="等待者用户" width="120" />
+            <el-table-column prop="WAITER_PROG" label="等待者程序" min-width="160" show-overflow-tooltip />
+            <el-table-column prop="WAIT_MIN" label="等待(分)" width="100" align="right">
+              <template #default="{ row }">
+                <span :style="{ color: row.WAIT_MIN > 10 ? '#F56C6C' : row.WAIT_MIN > 5 ? '#E6A23C' : '' }" style="font-weight: 600">
+                  {{ row.WAIT_MIN }}
+                </span>
+              </template>
+            </el-table-column>
+            <el-table-column prop="WAIT_EVENT" label="等待事件" width="160" show-overflow-tooltip />
+          </el-table>
+        </div>
+      </el-tab-pane>
+
+      <!-- ⑩ AWR快照 -->
+      <el-tab-pane label="⑩ AWR快照" name="awr" v-if="isOracle">
         <div class="card" v-loading="awrLoading">
           <div class="card-title" style="justify-content:space-between">
             <span><el-icon><Files /></el-icon> AWR快照列表</span>
@@ -272,8 +431,8 @@
         </div>
       </el-tab-pane>
 
-      <!-- ⑨ 操作记录 -->
-      <el-tab-pane label="⑨ 操作记录" name="audit">
+      <!-- ⑪ 操作记录 -->
+      <el-tab-pane label="⑪ 操作记录" name="audit">
         <div class="card" v-loading="auditLoading">
           <div class="card-title"><el-icon><List /></el-icon> 平台操作审计</div>
           <el-table :data="auditLogs" stripe border size="small" height="420">
@@ -322,10 +481,15 @@ const sessions   = ref([]);   const sessLoading   = ref(false)
 const instAlerts = ref([]);   const alertsLoading = ref(false)
 const awrSnaps   = ref([]);   const awrLoading    = ref(false)
 const auditLogs  = ref([]);   const auditLoading  = ref(false)
+const allWaits   = ref([]);   const waitsLoading  = ref(false)
+const locks      = ref([]);   const locksLoading  = ref(false)
+const healthDetail = ref(null); const healthDetailLoading = ref(false)
 
 const isOracle = computed(() => basic.value?.DB_TYPE === 'ORACLE')
 
 const sessChartRef = ref(); const cpuChartRef = ref(); const connChartRef = ref()
+const waitClassChartRef = ref(); const waitEventChartRef = ref()
+const healthRadarRef = ref()
 
 const tsFootnote = computed(() => {
   const t = basic.value?.DB_TYPE
@@ -403,6 +567,51 @@ async function loadBasic() {
   } finally { basicLoading.value = false }
 }
 
+async function loadHealthDetail() {
+  healthDetailLoading.value = true
+  try {
+    const r = await monitorApi.healthDetail(id.value)
+    healthDetail.value = r.data
+    await nextTick()
+    initHealthRadar()
+  } catch { healthDetail.value = null }
+  healthDetailLoading.value = false
+}
+
+function scoreDimColor(s) { return s >= 80 ? '#52c41a' : s >= 60 ? '#faad14' : '#ff4d4f' }
+
+function initHealthRadar() {
+  if (!healthRadarRef.value || !healthDetail.value?.dimensions) return
+  const dims = healthDetail.value.dimensions
+  const keys = ['connectivity', 'performance', 'load', 'resource']
+  const indicator = keys.map(k => ({ name: dims[k]?.label || k, max: 100 }))
+  const values = keys.map(k => dims[k]?.score ?? 0)
+
+  const c = echarts.getInstanceByDom(healthRadarRef.value) || echarts.init(healthRadarRef.value)
+  c.setOption({
+    backgroundColor: 'transparent',
+    tooltip: {},
+    radar: {
+      indicator,
+      radius: '65%',
+      axisName: { color: '#606266', fontSize: 12 },
+      splitArea: { areaStyle: { color: ['rgba(24,144,255,0.04)', 'rgba(24,144,255,0.08)'] } },
+      splitLine: { lineStyle: { color: '#e4e7ed' } },
+      axisLine: { lineStyle: { color: '#e4e7ed' } },
+    },
+    series: [{
+      type: 'radar',
+      data: [{
+        value: values,
+        name: '健康维度',
+        areaStyle: { opacity: 0.2, color: '#1890ff' },
+        lineStyle: { color: '#1890ff', width: 2 },
+        itemStyle: { color: '#1890ff' },
+      }],
+    }],
+  })
+}
+
 async function loadPerf() {
   perfLoading.value = true
   try {
@@ -449,6 +658,25 @@ async function loadAudit() {
   auditLoading.value = true
   try { const r = await monitorApi.audit(id.value); auditLogs.value = r.data || [] }
   finally { auditLoading.value = false }
+}
+
+async function loadWaits() {
+  waitsLoading.value = true
+  try {
+    const r = await monitorApi.waits(id.value)
+    allWaits.value = r.data || []
+    await nextTick(); initWaitCharts()
+  } catch { allWaits.value = [] }
+  waitsLoading.value = false
+}
+
+async function loadLocks() {
+  locksLoading.value = true
+  try {
+    const r = await monitorApi.locks(id.value)
+    locks.value = r.data || []
+  } catch { locks.value = [] }
+  locksLoading.value = false
 }
 
 function fmtTrendAxis(iso) {
@@ -546,6 +774,56 @@ async function killSess(row) {
 
 function goSqlOpt(text) { router.push({ path: '/sql', query: { sql: text.slice(0,500), instanceId: id.value } }) }
 
+function waitClassColor(cls) {
+  const map = { 'User I/O': 'primary', 'System I/O': 'primary', 'Concurrency': 'danger', 'Application': 'warning',
+    'Commit': 'success', 'Configuration': 'info', 'Network': '', 'Cluster': 'warning', 'Scheduler': 'info',
+    'Administrative': 'danger', 'Queueing': 'warning', 'Other': 'info' }
+  return map[cls] || 'info'
+}
+
+function initWaitCharts() {
+  const data = allWaits.value
+  if (!data.length) return
+  // 按等待类汇总
+  const classMap = {}
+  data.forEach(w => {
+    const cls = w.WAIT_CLASS || 'Other'
+    if (!classMap[cls]) classMap[cls] = 0
+    classMap[cls] += w.TIME_WAITED_SEC || 0
+  })
+  const classData = Object.entries(classMap).map(([name, value]) => ({ name, value: Math.round(value * 100) / 100 }))
+    .sort((a, b) => b.value - a.value)
+
+  const colorPalette = ['#5470c6', '#91cc75', '#fac858', '#ee6666', '#73c0de', '#3ba272', '#fc8452', '#9a60b4', '#ea7ccc']
+  // 饼图 - 等待类分布
+  if (waitClassChartRef.value) {
+    const c = echarts.getInstanceByDom(waitClassChartRef.value) || echarts.init(waitClassChartRef.value)
+    c.setOption({
+      backgroundColor: 'transparent', tooltip: { trigger: 'item', formatter: '{b}: {c}s ({d}%)' },
+      color: colorPalette,
+      series: [{ type: 'pie', radius: ['40%', '70%'], center: ['50%', '55%'], avoidLabelOverlap: true,
+        itemStyle: { borderRadius: 6, borderColor: '#fff', borderWidth: 2 },
+        label: { show: true, fontSize: 11 },
+        data: classData }],
+    })
+  }
+  // 横向柱状图 - Top 10 等待事件
+  const top10 = data.slice(0, 10).reverse()
+  if (waitEventChartRef.value) {
+    const c = echarts.getInstanceByDom(waitEventChartRef.value) || echarts.init(waitEventChartRef.value)
+    c.setOption({
+      backgroundColor: 'transparent', tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' } },
+      grid: { left: 16, right: 40, top: 8, bottom: 24, containLabel: true },
+      xAxis: { type: 'value', name: '秒', axisLabel: { color: '#909399', fontSize: 11 }, splitLine: { lineStyle: { color: '#e4e7ed' } } },
+      yAxis: { type: 'category', data: top10.map(w => w.EVENT?.length > 28 ? w.EVENT.slice(0, 28) + '…' : w.EVENT),
+        axisLabel: { color: '#606266', fontSize: 11 } },
+      series: [{ type: 'bar', barWidth: 16, data: top10.map(w => w.TIME_WAITED_SEC || 0),
+        itemStyle: { color: (p) => colorPalette[p.dataIndex % colorPalette.length], borderRadius: [0, 4, 4, 0] },
+        label: { show: true, position: 'right', fontSize: 11, color: '#606266', formatter: '{c}s' } }],
+    })
+  }
+}
+
 function genAwr() {
   const sorted = [...awrSel.value].sort((a,b) => a.SNAP_ID - b.SNAP_ID)
   ElMessage.info(`已选快照 ${sorted[0].SNAP_ID} → ${sorted[sorted.length-1].SNAP_ID}，AWR生成功能需DBA权限在数据库端执行`)
@@ -559,24 +837,38 @@ function onTabChange(tab) {
   else if (name === 'sessions' && !sessions.value.length) loadSessions()
   else if (name === 'alerts' && !instAlerts.value.length) loadAlerts()
   else if (name === 'trend') loadTrend()
+  else if (name === 'waits') loadWaits()
+  else if (name === 'locks') loadLocks()
   else if (name === 'awr' && !awrSnaps.value.length) loadAwr()
   else if (name === 'audit' && !auditLogs.value.length) loadAudit()
 }
 
 function refreshCurrent() {
   const loaders = { basic: loadBasic, perf: loadPerf, tablespaces: loadTablespaces,
-    sql: loadTopSql, sessions: loadSessions, alerts: loadAlerts, trend: loadTrend, awr: loadAwr, audit: loadAudit }
+    sql: loadTopSql, sessions: loadSessions, alerts: loadAlerts, trend: loadTrend, waits: loadWaits, locks: loadLocks, awr: loadAwr, audit: loadAudit }
   loaders[activeTab.value]?.()
 }
 
 onMounted(async () => {
   await loadBasic()
   try {
-    await monitorApi.collectNow(id.value)
+    const collectRes = await monitorApi.collectNow(id.value)
+    await loadBasic()
+    // 使用采集返回的维度数据更新健康详情
+    if (collectRes.data?.dimensions) {
+      healthDetail.value = {
+        score: collectRes.data.healthScore,
+        dimensions: collectRes.data.dimensions,
+        collectedAt: new Date().toISOString(),
+      }
+      await nextTick()
+      initHealthRadar()
+    } else {
+      await loadHealthDetail()
+    }
   } catch {
-    /* 采集失败仍展示 CMDB 与实时 Tab */
+    await loadHealthDetail()
   }
-  await loadBasic()
 })
 </script>
 
@@ -618,4 +910,19 @@ onMounted(async () => {
 .sub-title { font-size: 14px; font-weight: 600; margin-bottom: 8px; color: var(--agent-text, #303133); }
 .exporter-help { display: block; margin-top: 6px; font-size: 12px; color: var(--agent-text-muted, #909399); font-weight: normal; }
 .text-muted { color: var(--agent-text-tertiary, #b0b3b8); font-size: 12px; }
+
+/* Lock chain */
+.lock-chain { display: flex; flex-direction: column; gap: 12px; }
+.lock-chain-item { display: flex; align-items: center; gap: 12px; padding: 12px 16px; background: var(--agent-panel-deep, #f5f7fa); border-radius: 8px; border: 1px solid var(--agent-border, #e4e7ed); flex-wrap: wrap; }
+.lock-node { display: flex; flex-direction: column; min-width: 160px; border-radius: 6px; overflow: hidden; }
+.lock-node-title { font-size: 11px; font-weight: 600; padding: 4px 10px; text-align: center; color: #fff; }
+.lock-holder .lock-node-title { background: #F56C6C; }
+.lock-waiter .lock-node-title { background: #E6A23C; }
+.lock-node-body { display: flex; flex-direction: column; gap: 2px; padding: 8px 10px; background: #fff; font-size: 12px; }
+.lock-sid { font-weight: 700; color: var(--agent-text, #303133); }
+.lock-user { color: var(--agent-text-muted, #909399); }
+.lock-prog { color: var(--agent-text-tertiary, #b0b3b8); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 200px; }
+.lock-arrow { display: flex; flex-direction: column; align-items: center; gap: 2px; flex-shrink: 0; }
+.lock-wait-info { font-size: 11px; color: var(--agent-text-muted, #909399); white-space: nowrap; }
+.lock-event-tag { margin-left: auto; }
 </style>

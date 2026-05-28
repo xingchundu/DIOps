@@ -23,6 +23,12 @@
         <el-menu-item v-if="auth.showMenu('/monitor/collect-scheduler')" index="/monitor/collect-scheduler">
           <el-icon><Timer /></el-icon><template #title>定时采集观测</template>
         </el-menu-item>
+        <el-menu-item v-if="auth.showMenu('/monitor/compare')" index="/monitor/compare">
+          <el-icon><TrendCharts /></el-icon><template #title>性能对比</template>
+        </el-menu-item>
+        <el-menu-item v-if="auth.showMenu('/monitor/custom-metrics')" index="/monitor/custom-metrics">
+          <el-icon><DataBoard /></el-icon><template #title>自定义监控项</template>
+        </el-menu-item>
         <el-menu-item v-if="auth.showMenu('/alerts')" index="/alerts">
           <el-icon><Bell /></el-icon>
           <template #title>
@@ -33,11 +39,32 @@
         <el-menu-item v-if="auth.showMenu('/cmdb')" index="/cmdb">
           <el-icon><Grid /></el-icon><template #title>资产管理</template>
         </el-menu-item>
+        <el-menu-item v-if="auth.showMenu('/cmdb/hosts')" index="/cmdb/hosts">
+          <el-icon><Monitor /></el-icon><template #title>主机管理</template>
+        </el-menu-item>
+        <el-menu-item v-if="auth.showMenu('/cmdb/clusters')" index="/cmdb/clusters">
+          <el-icon><Share /></el-icon><template #title>集群拓扑</template>
+        </el-menu-item>
+        <el-menu-item v-if="auth.showMenu('/cmdb/app-relation')" index="/cmdb/app-relation">
+          <el-icon><Connection /></el-icon><template #title>应用依赖关系</template>
+        </el-menu-item>
+        <el-menu-item v-if="auth.showMenu('/cmdb/tags')" index="/cmdb/tags">
+          <el-icon><PriceTag /></el-icon><template #title>标签管理</template>
+        </el-menu-item>
         <el-menu-item v-if="auth.showMenu('/automation')" index="/automation">
           <el-icon><SetUp /></el-icon><template #title>自动化运维</template>
         </el-menu-item>
+        <el-menu-item v-if="auth.showMenu('/service-catalog')" index="/service-catalog">
+          <el-icon><Tickets /></el-icon><template #title>服务工单</template>
+        </el-menu-item>
         <el-menu-item v-if="auth.showMenu('/sql')" index="/sql">
           <el-icon><MagicStick /></el-icon><template #title>SQL优化</template>
+        </el-menu-item>
+        <el-menu-item v-if="auth.showMenu('/sql-review')" index="/sql-review">
+          <el-icon><CopyDocument /></el-icon><template #title>SQL评审</template>
+        </el-menu-item>
+        <el-menu-item v-if="auth.showMenu('/workbench')" index="/workbench">
+          <el-icon><Monitor /></el-icon><template #title>SQL工作台</template>
         </el-menu-item>
         <el-menu-item v-if="auth.showMenu('/reports')" index="/reports">
           <el-icon><Document /></el-icon><template #title>报表中心</template>
@@ -52,6 +79,7 @@
           <el-menu-item v-if="auth.isAdmin && auth.showMenu('/settings/users')" index="/settings/users">用户管理</el-menu-item>
           <el-menu-item v-if="auth.isAdmin && auth.showMenu('/settings/roles')" index="/settings/roles">角色权限</el-menu-item>
           <el-menu-item v-if="auth.showMenu('/settings/profile')" index="/settings/profile">个人设置</el-menu-item>
+          <el-menu-item v-if="auth.showMenu('/settings/system-config')" index="/settings/system-config">系统配置</el-menu-item>
         </el-sub-menu>
       </el-menu>
       <!-- 侧边栏底部版本信息 -->
@@ -124,7 +152,7 @@
 </template>
 
 <script setup>
-import { ref, computed, reactive, onMounted } from 'vue'
+import { ref, computed, reactive, onMounted, onUnmounted } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { useAuthStore } from '@/stores/auth.js'
 import { authApi, alertApi } from '@/api/index.js'
@@ -140,19 +168,23 @@ const pwdLoading = ref(false)
 const pwdRef = ref()
 
 const titleMap = {
-  '/dashboard': '控制台', '/monitor': '监控中心', '/monitor/collect-scheduler': '定时采集观测',
+  '/dashboard': '控制台', '/monitor': '监控中心', '/monitor/collect-scheduler': '定时采集观测', '/monitor/compare': '性能对比', '/monitor/custom-metrics': '自定义监控项',
   '/alerts': '告警中心',
-  '/cmdb': '资产管理', '/automation': '自动化运维', '/sql': 'SQL优化', '/reports': '报表中心',
-  '/settings/users': '用户管理', '/settings/roles': '角色权限', '/settings/profile': '个人设置',
+  '/cmdb': '资产管理', '/cmdb/hosts': '主机管理', '/cmdb/clusters': '集群拓扑', '/cmdb/app-relation': '应用依赖关系', '/cmdb/tags': '标签管理', '/automation': '自动化运维', '/service-catalog': '服务工单', '/sql': 'SQL优化', '/reports': '报表中心',
+  '/settings/users': '用户管理', '/settings/roles': '角色权限', '/settings/profile': '个人设置', '/settings/system-config': '系统配置',
   '/ai': 'AI 智能分析',
+  '/sql-review': 'SQL评审',
+  '/workbench': 'SQL工作台',
 }
 const settingsMenuVisible = computed(() =>
-  (auth.isAdmin && (auth.showMenu('/settings/users') || auth.showMenu('/settings/roles'))) ||
+  (auth.isAdmin && (auth.showMenu('/settings/users') || auth.showMenu('/settings/roles') || auth.showMenu('/settings/system-config'))) ||
   auth.showMenu('/settings/profile')
 )
 
 const activeMenu   = computed(() => {
   if (route.path === '/monitor/collect-scheduler') return '/monitor/collect-scheduler'
+  if (route.path === '/monitor/compare') return '/monitor/compare'
+  if (route.path === '/monitor/custom-metrics') return '/monitor/custom-metrics'
   if (route.path.startsWith('/monitor/') && route.params.id) return '/monitor'
   if (route.path.startsWith('/automation')) return '/automation'
   return route.path
@@ -226,10 +258,12 @@ async function refreshAlertBadge() {
   } catch {}
 }
 
+let alertTimer = null
 onMounted(() => {
   refreshAlertBadge()
-  setInterval(refreshAlertBadge, 60000)
+  alertTimer = setInterval(refreshAlertBadge, 60000)
 })
+onUnmounted(() => { if (alertTimer) { clearInterval(alertTimer); alertTimer = null } })
 </script>
 
 <style scoped>

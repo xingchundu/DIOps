@@ -35,39 +35,135 @@ function extractTrendNumbers(engine, metrics) {
   return { cpu: null, conn: null };
 }
 
-function computeHealthScore(engine, metrics) {
-  const e = String(engine || '').toUpperCase();
-  let s = 100;
-  if (e === 'ORACLE' || e === 'DAMENG') {
-    const hit = metricVal(metrics, 'Buffer Cache Hit Ratio');
-    if (hit != null && hit < 90) s -= 25;
-    else if (hit != null && hit < 95) s -= 10;
-    const active = metricVal(metrics, 'Active Sessions');
-    if (active != null && active > 200) s -= 15;
-  } else if (e === 'MYSQL') {
-    const hit = metricVal(metrics, 'mysql_innodb_buffer_pool_hit_ratio');
-    if (hit != null && hit < 90) s -= 25;
-    else if (hit != null && hit < 95) s -= 10;
-    const run = metricVal(metrics, 'mysql_global_status_threads_running');
-    if (run != null && run > 150) s -= 10;
-  } else if (e === 'POSTGRESQL') {
-    const hit = metricVal(metrics, 'pg_buffer_cache_hit_ratio');
-    if (hit != null && hit < 90) s -= 25;
-    else if (hit != null && hit < 95) s -= 10;
+function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, Math.round(v))); }
+
+/** 评分单维度：根据指标值和阈值映射到 0-100 */
+function scoreByThresholds(val, thresholds) {
+  // thresholds: [{ below: number, score: number }, ...] 从严格到宽松排序
+  if (val == null) return 50; // 无数据给中间分
+  for (const t of thresholds) {
+    if (val < t.below) return t.score;
   }
-  return Math.max(25, Math.min(100, Math.round(s)));
+  return 100;
+}
+
+/** 性能维度评分 */
+function scorePerformance(engine, metrics) {
+  const e = String(engine || '').toUpperCase();
+  let hitName, hit;
+  if (e === 'ORACLE' || e === 'DAMENG') hitName = 'Buffer Cache Hit Ratio';
+  else if (e === 'MYSQL') hitName = 'mysql_innodb_buffer_pool_hit_ratio';
+  else if (e === 'POSTGRESQL') hitName = 'pg_buffer_cache_hit_ratio';
+  else return { score: 50, detail: '未知引擎' };
+
+  hit = hitName ? metricVal(metrics, hitName) : null;
+  const score = scoreByThresholds(hit, [
+    { below: 80, score: 10 },
+    { below: 90, score: 40 },
+    { below: 95, score: 70 },
+  ]);
+  const detail = hit != null ? `缓存命中率 ${hit.toFixed(1)}%` : '缓存命中率无数据';
+  return { score, detail };
+}
+
+/** 负载维度评分 */
+function scoreLoad(engine, metrics) {
+  const e = String(engine || '').toUpperCase();
+  let val, maxThresh, label;
+  if (e === 'ORACLE' || e === 'DAMENG') {
+    val = metricVal(metrics, 'Active Sessions');
+    maxThresh = 200; label = '活跃会话';
+  } else if (e === 'MYSQL') {
+    val = metricVal(metrics, 'mysql_global_status_threads_running');
+    maxThresh = 150; label = '运行线程';
+  } else if (e === 'POSTGRESQL') {
+    val = metricVal(metrics, 'pg_stat_database_numbackends');
+    maxThresh = 100; label = '后端连接';
+  } else {
+    return { score: 50, detail: '未知引擎' };
+  }
+
+  let score;
+  if (val == null) score = 50;
+  else if (val <= 0) score = 100;
+  else score = clamp(100 - (val / maxThresh) * 100, 0, 100);
+
+  const detail = val != null ? `${label} ${Math.round(val)}` : `${label} 无数据`;
+  return { score, detail };
+}
+
+/** 资源维度评分 */
+function scoreResource(engine, metrics) {
+  const e = String(engine || '').toUpperCase();
+  if (e === 'ORACLE' || e === 'DAMENG') {
+    const pool = metricVal(metrics, 'Shared Pool Free %');
+    const score = scoreByThresholds(pool, [
+      { below: 10, score: 10 },
+      { below: 20, score: 40 },
+      { below: 30, score: 70 },
+    ]);
+    const detail = pool != null ? `Shared Pool 空闲 ${pool.toFixed(1)}%` : 'Shared Pool 无数据';
+    return { score, detail };
+  }
+  if (e === 'MYSQL') {
+    const slow = metricVal(metrics, 'mysql_global_status_slow_queries');
+    let score;
+    if (slow == null) score = 50;
+    else if (slow === 0) score = 100;
+    else if (slow < 10) score = 80;
+    else if (slow < 100) score = 50;
+    else score = 20;
+    return { score, detail: `慢查询 ${slow ?? '无数据'}` };
+  }
+  if (e === 'POSTGRESQL') {
+    const rollback = metricVal(metrics, 'pg_stat_database_xact_rollback');
+    const commit = metricVal(metrics, 'pg_stat_database_xact_commit');
+    let score;
+    if (rollback == null || commit == null) score = 50;
+    else if (commit === 0) score = rollback > 0 ? 60 : 100;
+    else {
+      const ratio = rollback / (commit + rollback);
+      score = clamp(100 - ratio * 500, 0, 100);
+    }
+    return { score, detail: `回滚事务 ${rollback ?? '无数据'}` };
+  }
+  return { score: 50, detail: '未知引擎' };
+}
+
+/**
+ * 多维度健康评分：连通性(20%) + 性能(30%) + 负载(25%) + 资源(25%)
+ * @returns {{ score: number, dimensions: object }}
+ */
+function computeHealthScore(engine, metrics, reachable) {
+  const connScore = reachable === 0 ? 0 : 100;
+  const perf = scorePerformance(engine, metrics);
+  const load = scoreLoad(engine, metrics);
+  const res  = scoreResource(engine, metrics);
+
+  const dimensions = {
+    connectivity: { score: connScore, weight: 20, label: '连通性', detail: reachable === 0 ? '连接失败' : '连接正常' },
+    performance:  { score: perf.score, weight: 30, label: '性能', detail: perf.detail },
+    load:         { score: load.score, weight: 25, label: '负载', detail: load.detail },
+    resource:     { score: res.score,  weight: 25, label: '资源', detail: res.detail },
+  };
+
+  const total = connScore * 0.2 + perf.score * 0.3 + load.score * 0.25 + res.score * 0.25;
+  const score = clamp(total, 0, 100);
+
+  return { score, dimensions };
 }
 
 async function safeInsertSample(row) {
   try {
     await db.execute(
-      `INSERT INTO MONITOR_METRIC_SAMPLE (INSTANCE_ID, DB_TYPE, REACHABLE, HEALTH_SCORE, METRIC_CPU, METRIC_CONN, METRICS_JSON, ERR_MSG)
-       VALUES (:1, :2, :3, :4, :5, :6, :7, :8)`,
+      `INSERT INTO MONITOR_METRIC_SAMPLE (INSTANCE_ID, DB_TYPE, REACHABLE, HEALTH_SCORE, HEALTH_DETAIL, METRIC_CPU, METRIC_CONN, METRICS_JSON, ERR_MSG)
+       VALUES (:1, :2, :3, :4, :5, :6, :7, :8, :9)`,
       [
         row.instanceId,
         row.dbType,
         row.reachable,
         row.healthScore,
+        row.healthDetail || null,
         row.metricCpu,
         row.metricConn,
         row.metricsJson,
@@ -86,10 +182,34 @@ async function safeInsertSample(row) {
 
 async function pruneOldSamples() {
   try {
+    const sysConfig = require('./systemConfig');
+    const metricDays = await sysConfig.getNumber('retention.metric_sample_days', 8);
     await db.execute(
-      `DELETE FROM MONITOR_METRIC_SAMPLE WHERE COLLECTED_AT < SYSTIMESTAMP - INTERVAL '8' DAY`,
-      []
+      `DELETE FROM MONITOR_METRIC_SAMPLE WHERE COLLECTED_AT < SYSTIMESTAMP - NUMTODSINTERVAL(:1, 'DAY')`,
+      [metricDays]
     );
+    // 清理已关闭的告警记录
+    const alertDays = await sysConfig.getNumber('retention.alert_record_days', 90);
+    if (alertDays > 0) {
+      await db.execute(
+        `DELETE FROM ALERT_RECORD WHERE STATUS IN ('RESOLVED','CLOSED') AND TRIGGER_TIME < SYSTIMESTAMP - NUMTODSINTERVAL(:1, 'DAY')`,
+        [alertDays]
+      ).catch(() => {});
+    }
+    // 清理审计日志
+    const auditDays = await sysConfig.getNumber('retention.audit_log_days', 180);
+    if (auditDays > 0) {
+      await db.execute(
+        `DELETE FROM SYS_AUDIT_LOG WHERE CREATED_AT < SYSTIMESTAMP - NUMTODSINTERVAL(:1, 'DAY')`,
+        [auditDays]
+      ).catch(() => {});
+    }
+    // 清理 SQL 工作台历史
+    const sqlDays = await sysConfig.getNumber('retention.sql_history_days', 30);
+    await db.execute(
+      `DELETE FROM SQL_WORKBENCH_HISTORY WHERE CREATED_AT < SYSTIMESTAMP - NUMTODSINTERVAL(:1, 'DAY')`,
+      [sqlDays]
+    ).catch(() => {});
   } catch (e) {
     if (!/ORA-00942|942/.test(e.message || '')) console.warn('[monitor-collect] prune:', e.message);
   }
@@ -114,7 +234,7 @@ async function collectInstance(instanceId) {
     const bundle = await exporter.getPerformanceBundle(instanceId);
     const metricEngine = dbType === 'GOLDENDB' ? 'MYSQL' : dbType;
     const { cpu, conn } = extractTrendNumbers(metricEngine, bundle.metrics);
-    const health = computeHealthScore(metricEngine, bundle.metrics);
+    const { score: health, dimensions } = computeHealthScore(metricEngine, bundle.metrics, 1);
     const jsonStr = JSON.stringify({
       exporter: bundle.exporter,
       metrics: bundle.metrics,
@@ -125,6 +245,7 @@ async function collectInstance(instanceId) {
       dbType,
       reachable: 1,
       healthScore: health,
+      healthDetail: JSON.stringify(dimensions),
       metricCpu: cpu,
       metricConn: conn,
       metricsJson: jsonStr,
@@ -134,14 +255,16 @@ async function collectInstance(instanceId) {
       `UPDATE CMDB_INSTANCE SET LAST_CHECK = SYSTIMESTAMP, STATUS = 'RUNNING', HEALTH_SCORE = :1, UPDATED_AT = SYSTIMESTAMP WHERE INSTANCE_ID = :2`,
       [health, instanceId]
     );
-    return { ok: true, healthScore: health, instanceId };
+    return { ok: true, healthScore: health, dimensions, instanceId };
   } catch (e) {
     const errMsg = (e.message || String(e)).slice(0, 500);
+    const { score: health, dimensions } = computeHealthScore(dbType, [], 0);
     await safeInsertSample({
       instanceId,
       dbType,
       reachable: 0,
-      healthScore: 0,
+      healthScore: health,
+      healthDetail: JSON.stringify(dimensions),
       metricCpu: null,
       metricConn: null,
       metricsJson: null,
@@ -149,9 +272,9 @@ async function collectInstance(instanceId) {
     });
     await db.execute(
       `UPDATE CMDB_INSTANCE SET LAST_CHECK = SYSTIMESTAMP, STATUS = 'ERROR', HEALTH_SCORE = :1, UPDATED_AT = SYSTIMESTAMP WHERE INSTANCE_ID = :2`,
-      [0, instanceId]
+      [health, instanceId]
     );
-    return { ok: false, err: errMsg, instanceId };
+    return { ok: false, err: errMsg, dimensions, instanceId };
   }
 }
 

@@ -51,7 +51,15 @@ app.use('/api/users',       require('./src/routes/users'));
 app.use('/api/rbac',        require('./src/routes/rbac'));
 app.use('/api/automation',  require('./src/routes/automation'));
 app.use('/api/ai',          require('./src/routes/ai'));
-app.use('/api/sql-opt',     require('./src/routes/sqlOptHistory'));
+app.use('/api/sql-opt',         require('./src/routes/sqlOptHistory'));
+app.use('/api/app-relation',    require('./src/routes/appRelation'));
+app.use('/api/tags',            require('./src/routes/tagGroup'));
+app.use('/api/sql-review',      require('./src/routes/sqlReview'));
+app.use('/api/reports',         require('./src/routes/reports'));
+app.use('/api/custom-metrics',  require('./src/routes/customMetrics'));
+app.use('/api/workbench',       require('./src/routes/sqlWorkbench'));
+app.use('/api/service-catalog', require('./src/routes/serviceCatalog'));
+app.use('/api/system-config', require('./src/routes/systemConfig'));
 
 // 兜底404
 app.use((req, res) => res.status(404).json({ code: 404, msg: `接口不存在: ${req.method} ${req.path}` }));
@@ -75,13 +83,19 @@ async function start() {
       console.log(` Oracle: ${process.env.DB_HOST}/${process.env.DB_SID || process.env.DB_SERVICE_NAME || ''}`);
       console.log('========================================\n');
 
-      const rawMs = parseInt(process.env.MONITOR_COLLECT_INTERVAL_MS || '90000', 10);
+      // 加载系统配置
+      const sysConfig = require('./src/services/systemConfig');
+      await sysConfig.loadAll();
+
+      const configIntervalMs = await sysConfig.getNumber('monitor.collect.interval_ms', 90000);
+      const rawMs = parseInt(process.env.MONITOR_COLLECT_INTERVAL_MS || String(configIntervalMs), 10);
       const intervalMs = Number.isFinite(rawMs) ? Math.max(60000, rawMs) : 90000;
+      const firstDelay = await sysConfig.getNumber('monitor.collect.first_delay_ms', 8000);
       const { collectAllInstances } = require('./src/services/monitorCollectPersist');
       const tick = () => collectAllInstances().catch((e) => console.error('[monitor-scheduler]', e.message));
-      setTimeout(tick, 8000);
+      setTimeout(tick, Math.max(1000, firstDelay));
       setInterval(tick, intervalMs);
-      console.log(`[monitor-scheduler] interval ${intervalMs}ms (env MONITOR_COLLECT_INTERVAL_MS)\n`);
+      console.log(`[monitor-scheduler] interval ${intervalMs}ms, first delay ${firstDelay}ms\n`);
     });
   } catch (err) {
     console.error('Startup failed:', err.message);

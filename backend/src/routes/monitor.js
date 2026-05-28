@@ -219,9 +219,13 @@ router.post('/instances/:id/sessions/kill', async (req, res) => {
   if (!['ADMIN', 'DBA'].includes(req.user.role)) return res.json({ code: 403, msg: '权限不足' });
   const { sid, serial } = req.body;
   if (!sid || serial == null || serial === '') return res.json({ code: 400, msg: 'sid 和 serial 不能为空' });
+  const sidNum = Number(sid), serialNum = Number(serial);
+  if (!Number.isInteger(sidNum) || sidNum <= 0 || !Number.isInteger(serialNum) || serialNum <= 0) {
+    return res.json({ code: 400, msg: 'sid 和 serial 必须为正整数' });
+  }
   try {
     await withOracleConn(req.params.id, async (conn) => {
-      await conn.execute(`ALTER SYSTEM KILL SESSION '${sid},${serial}' IMMEDIATE`);
+      await conn.execute(`ALTER SYSTEM KILL SESSION '${sidNum},${serialNum}' IMMEDIATE`);
     });
     await db.execute(
       `INSERT INTO SYS_AUDIT_LOG(USER_ID,USERNAME,ACTION,"RESOURCE",STATUS,DETAIL) VALUES(:1,:2,:3,:4,:5,:6)`,
@@ -351,6 +355,37 @@ router.get('/instances/:id/sysinfo', async (req, res) => {
   try {
     const data = await exporter.getSysinfoBundle(req.params.id);
     res.json({ code: 200, data });
+  } catch (err) {
+    res.json({ code: 500, msg: err.message });
+  }
+});
+
+// GET /api/monitor/instances/:id/health-detail  多维度健康评分详情
+router.get('/instances/:id/health-detail', async (req, res) => {
+  try {
+    const r = await db.execute(
+      `SELECT HEALTH_SCORE, HEALTH_DETAIL, COLLECTED_AT, REACHABLE
+       FROM MONITOR_METRIC_SAMPLE
+       WHERE INSTANCE_ID = :1
+       ORDER BY COLLECTED_AT DESC
+       FETCH FIRST 1 ROWS ONLY`,
+      [req.params.id]
+    );
+    if (!r.rows.length) {
+      return res.json({ code: 200, data: { score: null, dimensions: null, collectedAt: null } });
+    }
+    const row = r.rows[0];
+    let dimensions = null;
+    try { dimensions = row.HEALTH_DETAIL ? JSON.parse(row.HEALTH_DETAIL) : null; } catch {}
+    res.json({
+      code: 200,
+      data: {
+        score: row.HEALTH_SCORE,
+        reachable: row.REACHABLE,
+        dimensions,
+        collectedAt: row.COLLECTED_AT,
+      },
+    });
   } catch (err) {
     res.json({ code: 500, msg: err.message });
   }
