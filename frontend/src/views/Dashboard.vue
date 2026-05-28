@@ -72,7 +72,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted, nextTick } from 'vue'
+import { ref, onMounted, onUnmounted, nextTick } from 'vue'
 import * as echarts from 'echarts'
 import { monitorApi, alertApi } from '@/api/index.js'
 
@@ -83,6 +83,9 @@ const healthRank  = ref([])
 const pieTypeData = ref([])
 const alertChartRef = ref()
 const typeChartRef  = ref()
+
+const _charts = []
+const _resizeHandlers = []
 
 const statCards = [
   { key: 'totalInstances',   label: '纳管实例总数', icon: '🗄️', g1: '#1890ff', g2: '#096dd9' },
@@ -150,6 +153,7 @@ function initCharts() {
   // Alert trend chart
   if (alertChartRef.value) {
     const chart = echarts.init(alertChartRef.value)
+    _charts.push(chart)
     const days  = alertTrend.map(d => d.DT)
     const cnts  = alertTrend.map(d => d.CNT)
     chart.setOption({
@@ -175,11 +179,12 @@ function initCharts() {
           [{ offset:0, color:'#ff7a45' },{ offset:1, color:'#ff4d4f' }]) },
       }],
     })
-    window.addEventListener('resize', () => chart.resize())
+    const h1 = () => chart.resize(); window.addEventListener('resize', h1); _resizeHandlers.push(h1)
   }
   // 实例类型分布（真实按 DB_TYPE 统计）
   if (typeChartRef.value) {
     const chart = echarts.init(typeChartRef.value)
+    _charts.push(chart)
     chart.setOption({
       backgroundColor: 'transparent',
       textStyle: { color: '#909399' },
@@ -191,9 +196,15 @@ function initCharts() {
         label: { show: true, formatter: '{b}\n{d}%' },
       }],
     })
-    window.addEventListener('resize', () => chart.resize())
+    const h2 = () => chart.resize(); window.addEventListener('resize', h2); _resizeHandlers.push(h2)
   }
 }
+
+onUnmounted(() => {
+  _resizeHandlers.forEach(h => window.removeEventListener('resize', h))
+  _charts.forEach(c => c.dispose())
+  _charts.length = 0; _resizeHandlers.length = 0
+})
 </script>
 
 <style scoped>

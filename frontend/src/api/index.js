@@ -337,4 +337,17 @@ export const systemConfigApi = {
   reset: key => http.post(`/system-config/${encodeURIComponent(key)}/reset`),
   reload: () => http.post('/system-config/reload'),
 }
+export const deployApi = {
+  templates: () => http.get('/deploy/templates'),
+  template: id => http.get(`/deploy/templates/${id}`),
+  createTemplate: d => http.post('/deploy/templates', d),
+  updateTemplate: (id, d) => http.put(`/deploy/templates/${id}`, d),
+  jobs: p => http.get('/deploy/jobs', { params: p }),
+  job: id => http.get(`/deploy/jobs/${id}`),
+  createJob: d => http.post('/deploy/jobs', d),
+  executeJob: id => http.post(`/deploy/jobs/${id}/execute`),
+  cancelJob: id => http.post(`/deploy/jobs/${id}/cancel`),
+  jobLog: id => http.get(`/deploy/jobs/${id}/log`),
+  stats: () => http.get('/deploy/stats'),
+}
 export default http

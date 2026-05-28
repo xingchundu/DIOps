@@ -13,7 +13,7 @@
               <div style="margin-top:8px;font-weight:600">{{ auth.user?.username }}</div>
               <el-tag size="small" :type="roleColor">{{ roleLabel }}</el-tag>
             </div>
-            <el-form :model="profile" label-width="80px" style="flex:1" ref="profileRef">
+            <el-form :model="profile" :rules="profileRules" label-width="80px" style="flex:1" ref="profileRef">
               <el-row :gutter="16">
                 <el-col :span="12">
                   <el-form-item label="姓名">
@@ -113,6 +113,10 @@ const profile = reactive({
   phone:    auth.user?.phone    || '',
 })
 
+const profileRules = {
+  email: [{ type: 'email', message: '请输入正确的邮箱格式', trigger: 'blur' }],
+  phone: [{ pattern: /^1[3-9]\d{9}$/, message: '请输入正确的手机号', trigger: 'blur' }],
+}
 const pwdForm = reactive({ oldPassword:'', newPassword:'', confirmPassword:'' })
 const pwdRules = {
   oldPassword:     [{ required:true, message:'请输入当前密码' }],
@@ -139,13 +143,15 @@ const pwdStrength = computed(() => {
 const strengthLabel = computed(() => ['','弱','中','强','极强'][pwdStrength.value] || '')
 
 async function saveProfile() {
+  try { await profileRef.value.validate() } catch { return }
   saving.value = true
   try {
     await authApi.updateProfile(profile)
     await auth.refreshProfile()
     ElMessage.success('个人信息更新成功')
     editing.value = false
-  } finally { saving.value = false }
+  } catch (e) { ElMessage.error(e.message || '保存失败') }
+  finally { saving.value = false }
 }
 
 async function changePwd() {

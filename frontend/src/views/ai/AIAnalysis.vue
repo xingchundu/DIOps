@@ -7,9 +7,14 @@
         <h1>AI 智能分析中心</h1>
         <p>根因分析 · 异常检测 · 告警降噪 · 智能问答 · 知识库</p>
       </div>
-      <el-tag type="success" style="margin-left:auto" size="large">
-        <el-icon><CircleCheck /></el-icon> deepseek-r1:1.5b
-      </el-tag>
+      <div style="margin-left:auto;display:flex;align-items:center;gap:12px">
+        <el-tag :type="aiHealth.status === 'ok' ? 'success' : 'danger'" size="large">
+          <el-icon v-if="aiHealth.status === 'ok'"><CircleCheck /></el-icon>
+          <el-icon v-else><CircleClose /></el-icon>
+          AI 服务 {{ aiHealth.status === 'ok' ? '在线' : '离线' }}
+        </el-tag>
+        <el-tag v-if="aiHealth.version" type="info" size="large">{{ aiHealth.version }}</el-tag>
+      </div>
     </div>
 
     <!-- 功能 Tab -->
@@ -291,10 +296,18 @@
                     <div class="bubble-text" v-html="formatChatText(msg.content || msg.CONTENT)" />
                     <div v-if="msg.retrieved_docs?.length" class="retrieved-docs">
                       <el-divider content-position="left">参考知识库</el-divider>
-                      <el-tag v-for="d in msg.retrieved_docs" :key="d.title"
-                        type="info" size="small" style="margin:2px">
-                        {{ d.title }} ({{ (d.similarity * 100).toFixed(0) }}%)
-                      </el-tag>
+                      <el-popover v-for="d in msg.retrieved_docs" :key="d.title" trigger="hover" placement="top" :width="300">
+                        <template #reference>
+                          <el-tag type="info" size="small" style="margin:2px;cursor:pointer">
+                            {{ d.title }} ({{ (d.similarity * 100).toFixed(0) }}%)
+                          </el-tag>
+                        </template>
+                        <div style="font-size:12px;color:#606266;line-height:1.6">
+                          <strong>{{ d.title }}</strong><br/>
+                          相似度: {{ (d.similarity * 100).toFixed(1) }}%
+                          <template v-if="d.chunk_text"><br/>{{ d.chunk_text?.slice(0, 200) }}...</template>
+                        </div>
+                      </el-popover>
                     </div>
                   </div>
                 </div>
@@ -309,6 +322,23 @@
 
               <!-- 输入区 -->
               <div class="chat-input-area">
+                <el-popover placement="top" :width="400" trigger="click">
+                  <template #reference>
+                    <el-button size="small" type="info" plain icon="Search">知识库</el-button>
+                  </template>
+                  <div class="kb-popover">
+                    <el-input v-model="chatKbQuery" placeholder="搜索知识库..." size="small" clearable @keydown.enter="chatKbSearch">
+                      <template #append><el-button @click="chatKbSearch" icon="Search" size="small" /></template>
+                    </el-input>
+                    <div class="kb-popover-results" v-loading="chatKbLoading">
+                      <div v-for="r in chatKbResults" :key="r.chunk_id" class="kb-popover-item" @click="insertKbContext(r)">
+                        <div class="kb-popover-title">{{ r.doc_title }} <el-tag size="small" type="success">{{ (r.similarity * 100).toFixed(0) }}%</el-tag></div>
+                        <div class="kb-popover-snippet">{{ r.chunk_text?.slice(0, 100) }}...</div>
+                      </div>
+                      <div v-if="!chatKbResults.length && !chatKbLoading" class="kb-popover-empty">输入关键词检索知识库</div>
+                    </div>
+                  </div>
+                </el-popover>
                 <el-input v-model="chatInput" class="chat-input-grow" type="textarea" :rows="2"
                   placeholder="输入运维问题，如：这个数据库为什么慢？帮我分析锁等待原因..."
                   @keydown.ctrl.enter="sendChat" resize="none" />
@@ -450,19 +480,13 @@
 <script setup>
 import { ref, reactive, onMounted, nextTick, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { MagicStick, CircleCheck, ChatDotRound, Top } from '@element-plus/icons-vue'
-import axios from 'axios'
-
-const API = axios.create({ baseURL: '/api', timeout: 180000 })
-API.interceptors.request.use(cfg => {
-  const token = localStorage.getItem('token')
-  if (token) cfg.headers.Authorization = `Bearer ${token}`
-  return cfg
-})
+import { MagicStick, CircleCheck, CircleClose, ChatDotRound, Top } from '@element-plus/icons-vue'
+import { aiApi, cmdbApi } from '@/api/index.js'
 
 // ─── 全局状态 ──────────────────────────────────────────────────
 const activeTab = ref('rca')
 const instances = ref([])
+const aiHealth = reactive({ status: 'unknown', version: '' })
 
 // ─── RCA ──────────────────────────────────────────────────────
 const rcaForm = reactive({ alert_id: 0, instance_id: null, alert_content: '' })
@@ -480,15 +504,14 @@ async function runRca() {
   rcaLoading.value = true
   rcaResult.value = null
   try {
-    const { data } = await API.post('/ai/rca', rcaForm)
-    if (data.code === 200) {
+    const res = await aiApi.rca(rcaForm)
+    if (res.code === 200) {
       ElMessage.success('RCA 分析完成')
-      // 加载详情
-      const detail = await API.get(`/ai/rca/${data.data.rca_id}`)
-      if (detail.data.code === 200) rcaResult.value = detail.data.data
+      const detail = await aiApi.rcaDetail(res.data.rca_id)
+      if (detail.code === 200) rcaResult.value = detail.data
       loadRcaList()
     } else {
-      ElMessage.error(data.msg || 'RCA 分析失败')
+      ElMessage.error(res.msg || 'RCA 分析失败')
     }
   } catch (e) {
     ElMessage.error(e.message)
@@ -500,17 +523,17 @@ async function runRca() {
 async function loadRcaList() {
   rcaListLoading.value = true
   try {
-    const { data } = await API.get('/ai/rca/list', { params: { limit: 30 } })
-    if (data.code === 200) rcaList.value = data.data || []
+    const res = await aiApi.rcaList({ limit: 30 })
+    if (res.code === 200) rcaList.value = res.data || []
   } finally {
     rcaListLoading.value = false
   }
 }
 
 async function openRcaDetail(id) {
-  const { data } = await API.get(`/ai/rca/${id}`)
-  if (data.code === 200) {
-    rcaDetailData.value = data.data
+  const res = await aiApi.rcaDetail(id)
+  if (res.code === 200) {
+    rcaDetailData.value = res.data
     rcaDetailVisible.value = true
   }
 }
@@ -526,12 +549,12 @@ async function runAnomalyDetect() {
   if (!anomalyForm.instance_id) return ElMessage.warning('请选择实例')
   anomalyLoading.value = true
   try {
-    const { data } = await API.post('/ai/anomaly/detect', anomalyForm)
-    if (data.code === 200) {
-      ElMessage.success(`检测完成，发现 ${data.data.detected_count} 个异常`)
+    const res = await aiApi.anomalyDetect(anomalyForm)
+    if (res.code === 200) {
+      ElMessage.success(`检测完成，发现 ${res.data.detected_count} 个异常`)
       loadAnomalies()
     } else {
-      ElMessage.error(data.msg)
+      ElMessage.error(res.msg)
     }
   } catch (e) {
     ElMessage.error(e.message)
@@ -545,8 +568,8 @@ async function loadAnomalies() {
   const params = { limit: 50 }
   if (anomalyFilter.instance_id) params.instance_id = anomalyFilter.instance_id
   try {
-    const { data } = await API.get('/ai/anomaly', { params })
-    if (data.code === 200) anomalyList.value = data.data || []
+    const res = await aiApi.anomalyList(params)
+    if (res.code === 200) anomalyList.value = res.data || []
   } finally {
     anomalyListLoading.value = false
   }
@@ -567,12 +590,12 @@ async function runCluster() {
   clusterLoading.value = true
   clusterResult.value = ''
   try {
-    const { data } = await API.post('/ai/cluster', { similarity_threshold: clusterThreshold.value })
-    if (data.code === 200) {
-      clusterResult.value = `聚类完成！合并为 ${data.data.cluster_count} 个告警簇，减少重复处理`
+    const res = await aiApi.cluster({ similarity_threshold: clusterThreshold.value })
+    if (res.code === 200) {
+      clusterResult.value = `聚类完成！合并为 ${res.data.cluster_count} 个告警簇，减少重复处理`
       loadClusters()
     } else {
-      ElMessage.error(data.msg)
+      ElMessage.error(res.msg)
     }
   } catch (e) {
     ElMessage.error(e.message)
@@ -584,8 +607,8 @@ async function runCluster() {
 async function loadClusters() {
   clusterListLoading.value = true
   try {
-    const { data } = await API.get('/ai/cluster', { params: { status: 'ACTIVE', limit: 50 } })
-    if (data.code === 200) clusterList.value = data.data || []
+    const res = await aiApi.clusterList({ status: 'ACTIVE', limit: 50 })
+    if (res.code === 200) clusterList.value = res.data || []
   } finally {
     clusterListLoading.value = false
   }
@@ -600,6 +623,9 @@ const chatInstanceId = ref(null)
 const chatScrollRef = ref(null)
 const chatSessions = ref([])
 const chatSessionListLoading = ref(false)
+const chatKbQuery = ref('')
+const chatKbResults = ref([])
+const chatKbLoading = ref(false)
 
 const suggestedQuestions = [
   '这个数据库为什么慢？',
@@ -648,9 +674,9 @@ function normalizeChatSessionRow(s) {
 async function loadChatSessionList() {
   chatSessionListLoading.value = true
   try {
-    const { data } = await API.get('/ai/chat/sessions', { params: { limit: 40 } })
-    if (isApiOk(data) && data.data != null) {
-      const raw = Array.isArray(data.data) ? data.data : []
+    const res = await aiApi.chatSessions({ limit: 40 })
+    if (isApiOk(res) && res.data != null) {
+      const raw = Array.isArray(res.data) ? res.data : []
       chatSessions.value = raw.map(normalizeChatSessionRow).filter((x) => x.SESSION_ID)
     } else {
       chatSessions.value = []
@@ -704,9 +730,9 @@ async function loadChatHistory() {
   const sid = chatSessionId.value
   if (!sid) return
   try {
-    const { data } = await API.get(`/ai/chat/${encodeURIComponent(sid)}`, { params: { limit: 50 } })
-    if (!isApiOk(data) || !Array.isArray(data.data)) return
-    chatMessages.value = data.data.map(mapChatHistoryRow)
+    const res = await aiApi.chatHistory(sid, { limit: 50 })
+    if (!isApiOk(res) || !Array.isArray(res.data)) return
+    chatMessages.value = res.data.map(mapChatHistoryRow)
     await nextTick()
     scrollChat()
   } catch {
@@ -726,20 +752,20 @@ async function sendChat() {
   scrollChat()
 
   try {
-    const { data } = await API.post('/ai/chat', {
+    const res = await aiApi.chat({
       question: q,
       session_id: chatSessionId.value,
       instance_id: chatInstanceId.value || null,
     })
-    if (data.code === 200) {
-      if (data.data?.session_id) chatSessionId.value = data.data.session_id
+    if (res.code === 200) {
+      if (res.data?.session_id) chatSessionId.value = res.data.session_id
       chatMessages.value.push({
         role: 'assistant',
-        content: data.data.answer,
-        retrieved_docs: data.data.retrieved_docs,
+        content: res.data.answer,
+        retrieved_docs: res.data.retrieved_docs,
       })
     } else {
-      chatMessages.value.push({ role: 'assistant', content: `[错误] ${data.msg}` })
+      chatMessages.value.push({ role: 'assistant', content: `[错误] ${res.msg}` })
     }
   } catch (e) {
     chatMessages.value.push({ role: 'assistant', content: `[请求失败] ${e.message}` })
@@ -758,6 +784,21 @@ function askSuggested(q) {
 
 function scrollChat() {
   if (chatScrollRef.value) chatScrollRef.value.scrollTop = chatScrollRef.value.scrollHeight
+}
+
+async function chatKbSearch() {
+  if (!chatKbQuery.value.trim()) { chatKbResults.value = []; return }
+  chatKbLoading.value = true
+  try {
+    const res = await aiApi.knowledgeSearch({ q: chatKbQuery.value, top_k: 5 })
+    chatKbResults.value = res.code === 200 ? (res.data || []) : []
+  } catch { chatKbResults.value = [] }
+  chatKbLoading.value = false
+}
+
+function insertKbContext(r) {
+  const snippet = r.chunk_text?.slice(0, 300) || ''
+  chatInput.value += (chatInput.value ? '\n' : '') + `[参考: ${r.doc_title}] ${snippet}`
 }
 
 function formatChatText(text) {
@@ -786,8 +827,8 @@ async function loadKnowledge() {
   const params = {}
   if (kbDocTypeFilter.value) params.doc_type = kbDocTypeFilter.value
   try {
-    const { data } = await API.get('/ai/knowledge', { params })
-    if (data.code === 200) knowledgeList.value = data.data || []
+    const res = await aiApi.knowledge(params)
+    if (res.code === 200) knowledgeList.value = res.data || []
   } finally {
     knowledgeLoading.value = false
   }
@@ -797,10 +838,8 @@ async function searchKnowledge() {
   if (!kbSearchQuery.value.trim()) return loadKnowledge()
   knowledgeLoading.value = true
   try {
-    const { data } = await API.get('/ai/knowledge/search', {
-      params: { q: kbSearchQuery.value, top_k: 5 }
-    })
-    if (data.code === 200) kbSearchResults.value = data.data || []
+    const res = await aiApi.knowledgeSearch({ q: kbSearchQuery.value, top_k: 5 })
+    if (res.code === 200) kbSearchResults.value = res.data || []
   } finally {
     knowledgeLoading.value = false
   }
@@ -810,14 +849,14 @@ async function submitNewDoc() {
   if (!newDocForm.title || !newDocForm.content) return ElMessage.warning('标题和内容不能为空')
   addDocLoading.value = true
   try {
-    const { data } = await API.post('/ai/knowledge', newDocForm)
-    if (data.code === 200) {
-      ElMessage.success(`文档已添加，ID=${data.data.doc_id}，向量化索引完成`)
+    const res = await aiApi.addKnowledge(newDocForm)
+    if (res.code === 200) {
+      ElMessage.success(`文档已添加，ID=${res.data.doc_id}，向量化索引完成`)
       showAddKnowledge.value = false
       Object.assign(newDocForm, { title: '', content: '', doc_type: 'EXPERIENCE', tags: '', source: '' })
       loadKnowledge()
     } else {
-      ElMessage.error(data.msg)
+      ElMessage.error(res.msg)
     }
   } finally {
     addDocLoading.value = false
@@ -825,33 +864,29 @@ async function submitNewDoc() {
 }
 
 async function uploadKnowledgeFile(file) {
-  const formData = new FormData()
-  formData.append('file', file)
+  const fd = new FormData()
+  fd.append('file', file)
   try {
-    const { data } = await API.post(
-      `/ai/knowledge/upload?doc_type=MANUAL`,
-      formData,
-      { headers: { 'Content-Type': 'multipart/form-data' } }
-    )
-    if (Number(data?.code) === 200) {
-      ElMessage.success(data.msg || `文件「${file.name}」上传成功，已建立索引`)
+    const res = await aiApi.uploadKnowledge(fd, { doc_type: 'MANUAL' })
+    if (Number(res?.code) === 200) {
+      ElMessage.success(res.msg || `文件「${file.name}」上传成功，已建立索引`)
       loadKnowledge()
     } else {
-      ElMessage.error(data?.msg || '上传失败')
+      ElMessage.error(res?.msg || '上传失败')
     }
   } catch (e) {
     ElMessage.error(e.message)
   }
-  return false // 阻止默认上传
+  return false
 }
 
 async function reindexDoc(docId) {
   try {
-    const { data } = await API.post(`/ai/knowledge/${docId}/reindex`)
-    if (Number(data?.code) === 200) {
-      ElMessage.success(data.msg || '重建索引成功')
+    const res = await aiApi.reindexKnowledge(docId)
+    if (Number(res?.code) === 200) {
+      ElMessage.success(res.msg || '重建索引成功')
     } else {
-      ElMessage.error(data?.msg || '重建索引失败')
+      ElMessage.error(res?.msg || '重建索引失败')
     }
   } catch (e) {
     ElMessage.error(e.message)
@@ -861,8 +896,8 @@ async function reindexDoc(docId) {
 async function deleteDoc(docId) {
   await ElMessageBox.confirm('确认删除该知识文档及其所有向量块？', '删除确认', { type: 'warning' })
   try {
-    const { data } = await API.delete(`/ai/knowledge/${docId}`)
-    data.code === 200 ? ElMessage.success('删除成功') : ElMessage.error(data.msg)
+    const res = await aiApi.deleteKnowledge(docId)
+    res.code === 200 ? ElMessage.success('删除成功') : ElMessage.error(res.msg)
     loadKnowledge()
   } catch (e) {
     if (e !== 'cancel') ElMessage.error(e.message)
@@ -881,11 +916,22 @@ function onTabChange({ paneName }) {
   else if (paneName === 'knowledge') loadKnowledge()
 }
 
+async function checkHealth() {
+  try {
+    const res = await aiApi.health()
+    aiHealth.status = res.status === 'ok' ? 'ok' : 'error'
+    aiHealth.version = res.version || ''
+  } catch {
+    aiHealth.status = 'error'
+    aiHealth.version = ''
+  }
+}
+
 // ─── 初始化 ─────────────────────────────────────────────────────
 async function loadInstances() {
   try {
-    const { data } = await API.get('/cmdb/instances', { params: { size: 200 } })
-    if (data.code === 200) instances.value = data.data?.list || data.data || []
+    const res = await cmdbApi.list({ size: 200 })
+    if (res.code === 200) instances.value = res.data?.list || res.data || []
   } catch {}
 }
 
@@ -897,6 +943,7 @@ watch(activeTab, (name) => {
 })
 
 onMounted(() => {
+  checkHealth()
   loadInstances()
   loadRcaList()
   newChatSession()
@@ -1157,4 +1204,13 @@ onMounted(() => {
 .kb-result-header { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
 .kb-result-title { font-weight: 600; font-size: 13px; flex: 1; }
 .kb-result-snippet { font-size: 12.5px; color: #606266; line-height: 1.6; }
+
+/* Knowledge popover in chat */
+.kb-popover { max-height: 360px; }
+.kb-popover-results { max-height: 280px; overflow-y: auto; margin-top: 8px; }
+.kb-popover-item { padding: 8px 10px; border-radius: 6px; cursor: pointer; border: 1px solid #e4e7ed; margin-bottom: 6px; transition: background 0.15s; }
+.kb-popover-item:hover { background: #ecf5ff; border-color: #b3d8ff; }
+.kb-popover-title { font-size: 13px; font-weight: 600; color: #303133; display: flex; align-items: center; gap: 6px; margin-bottom: 4px; }
+.kb-popover-snippet { font-size: 12px; color: #909399; line-height: 1.4; }
+.kb-popover-empty { font-size: 12px; color: #c0c4cc; text-align: center; padding: 20px 0; }
 </style>

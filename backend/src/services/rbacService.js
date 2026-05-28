@@ -7,6 +7,8 @@ const FALLBACK_MENUS_ALL = [
   '/monitor/collect-scheduler',
   '/alerts',
   '/cmdb',
+  '/cmdb/hosts',
+  '/cmdb/clusters',
   '/automation',
   '/sql',
   '/reports',

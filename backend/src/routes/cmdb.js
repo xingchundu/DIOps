@@ -292,9 +292,180 @@ router.delete('/instances/:id', async (req, res) => {
 
 // GET /api/cmdb/hosts
 router.get('/hosts', async (req, res) => {
+  const { keyword, status, datacenter } = req.query;
   try {
-    const r = await db.execute(`SELECT * FROM CMDB_HOST ORDER BY HOST_ID`,[]);
+    let where = ['1=1']; let binds = []; let bi = 1;
+    if (keyword)   { where.push(`(UPPER(HOSTNAME) LIKE :${bi} OR UPPER(IP_ADDR) LIKE :${bi})`); binds.push(`%${keyword.toUpperCase()}%`); bi++; }
+    if (status)     { where.push(`STATUS=:${bi}`); binds.push(status); bi++; }
+    if (datacenter) { where.push(`DATACENTER=:${bi}`); binds.push(datacenter); bi++; }
+    const r = await db.execute(`SELECT * FROM CMDB_HOST WHERE ${where.join(' AND ')} ORDER BY HOST_ID`, binds);
     res.json({ code: 200, data: r.rows });
+  } catch (err) { res.json({ code: 500, msg: err.message }); }
+});
+
+// POST /api/cmdb/hosts  创建主机
+router.post('/hosts', async (req, res) => {
+  if (!['ADMIN', 'DBA'].includes(req.user.role)) return res.json({ code: 403, msg: '权限不足' });
+  const { hostname, ipAddr, osType, osVersion, cpuCores, memoryGb, datacenter, status } = req.body;
+  if (!hostname || !ipAddr) return res.json({ code: 400, msg: '主机名和IP地址不能为空' });
+  try {
+    const dup = await db.execute(`SELECT HOST_ID FROM CMDB_HOST WHERE IP_ADDR=:1`, [ipAddr]);
+    if (dup.rows.length) return res.json({ code: 409, msg: '该IP地址已存在' });
+    await db.execute(
+      `INSERT INTO CMDB_HOST(HOSTNAME,IP_ADDR,OS_TYPE,OS_VERSION,CPU_CORES,MEMORY_GB,DATACENTER,STATUS)
+       VALUES(:1,:2,:3,:4,:5,:6,:7,:8)`,
+      [hostname, ipAddr, osType, osVersion, cpuCores, memoryGb, datacenter, status || 'ONLINE']
+    );
+    await db.execute(
+      `INSERT INTO SYS_AUDIT_LOG(USER_ID,USERNAME,ACTION,"RESOURCE",STATUS) VALUES(:1,:2,:3,:4,:5)`,
+      [req.user.userId, req.user.username, 'CREATE_HOST', `${hostname}(${ipAddr})`, 'SUCCESS']
+    );
+    res.json({ code: 200, msg: '主机创建成功' });
+  } catch (err) { res.json({ code: 500, msg: err.message }); }
+});
+
+// PUT /api/cmdb/hosts/:id  更新主机
+router.put('/hosts/:id', async (req, res) => {
+  if (!['ADMIN', 'DBA'].includes(req.user.role)) return res.json({ code: 403, msg: '权限不足' });
+  const { hostname, ipAddr, osType, osVersion, cpuCores, memoryGb, datacenter, status } = req.body;
+  try {
+    const old = await db.execute(`SELECT HOSTNAME FROM CMDB_HOST WHERE HOST_ID=:1`, [req.params.id]);
+    if (!old.rows.length) return res.json({ code: 404, msg: '主机不存在' });
+    await db.execute(
+      `UPDATE CMDB_HOST SET HOSTNAME=:1,IP_ADDR=:2,OS_TYPE=:3,OS_VERSION=:4,CPU_CORES=:5,MEMORY_GB=:6,DATACENTER=:7,STATUS=:8 WHERE HOST_ID=:9`,
+      [hostname, ipAddr, osType, osVersion, cpuCores, memoryGb, datacenter, status, req.params.id]
+    );
+    await db.execute(
+      `INSERT INTO SYS_AUDIT_LOG(USER_ID,USERNAME,ACTION,"RESOURCE",STATUS) VALUES(:1,:2,:3,:4,:5)`,
+      [req.user.userId, req.user.username, 'UPDATE_HOST', old.rows[0].HOSTNAME, 'SUCCESS']
+    );
+    res.json({ code: 200, msg: '主机更新成功' });
+  } catch (err) { res.json({ code: 500, msg: err.message }); }
+});
+
+// DELETE /api/cmdb/hosts/:id  删除主机
+router.delete('/hosts/:id', async (req, res) => {
+  if (!['ADMIN', 'DBA'].includes(req.user.role)) return res.json({ code: 403, msg: '权限不足' });
+  try {
+    const old = await db.execute(`SELECT HOSTNAME FROM CMDB_HOST WHERE HOST_ID=:1`, [req.params.id]);
+    if (!old.rows.length) return res.json({ code: 404, msg: '主机不存在' });
+    const refs = await db.execute(`SELECT COUNT(*) AS C FROM CMDB_INSTANCE WHERE HOST_ID=:1`, [req.params.id]);
+    if (refs.rows[0].C > 0) return res.json({ code: 409, msg: '该主机下仍有数据库实例，请先迁移实例后再删除' });
+    await db.execute(`DELETE FROM CMDB_HOST WHERE HOST_ID=:1`, [req.params.id]);
+    await db.execute(
+      `INSERT INTO SYS_AUDIT_LOG(USER_ID,USERNAME,ACTION,"RESOURCE",STATUS) VALUES(:1,:2,:3,:4,:5)`,
+      [req.user.userId, req.user.username, 'DELETE_HOST', old.rows[0].HOSTNAME, 'SUCCESS']
+    );
+    res.json({ code: 200, msg: '主机删除成功' });
+  } catch (err) { res.json({ code: 500, msg: err.message }); }
+});
+
+// ======================== 集群拓扑管理 ========================
+
+// GET /api/cmdb/clusters  集群列表
+router.get('/clusters', async (req, res) => {
+  try {
+    const r = await db.execute(
+      `SELECT c.*, (SELECT COUNT(*) FROM CMDB_CLUSTER_MEMBER m WHERE m.CLUSTER_ID=c.CLUSTER_ID) AS MEMBER_COUNT
+       FROM CMDB_CLUSTER c ORDER BY c.CLUSTER_ID`, []
+    );
+    res.json({ code: 200, data: r.rows });
+  } catch (err) { res.json({ code: 500, msg: err.message }); }
+});
+
+// GET /api/cmdb/clusters/:id  集群详情（含成员实例）
+router.get('/clusters/:id', async (req, res) => {
+  try {
+    const cluster = await db.execute(`SELECT * FROM CMDB_CLUSTER WHERE CLUSTER_ID=:1`, [req.params.id]);
+    if (!cluster.rows.length) return res.json({ code: 404, msg: '集群不存在' });
+    const members = await db.execute(
+      `SELECT m.MEMBER_ID, m.NODE_ROLE, m.SORT_ORDER,
+              i.INSTANCE_ID, i.INSTANCE_NAME, i.DB_TYPE, i.HOST_IP, i.PORT, i.STATUS, i.HEALTH_SCORE
+       FROM CMDB_CLUSTER_MEMBER m
+       JOIN CMDB_INSTANCE i ON m.INSTANCE_ID = i.INSTANCE_ID
+       WHERE m.CLUSTER_ID = :1 ORDER BY m.SORT_ORDER, m.MEMBER_ID`,
+      [req.params.id]
+    );
+    res.json({ code: 200, data: { ...cluster.rows[0], members: members.rows } });
+  } catch (err) { res.json({ code: 500, msg: err.message }); }
+});
+
+// POST /api/cmdb/clusters  创建集群
+router.post('/clusters', async (req, res) => {
+  if (!['ADMIN', 'DBA'].includes(req.user.role)) return res.json({ code: 403, msg: '权限不足' });
+  const { clusterName, clusterType, description, vip, status } = req.body;
+  if (!clusterName || !clusterType) return res.json({ code: 400, msg: '集群名称和类型不能为空' });
+  try {
+    await db.execute(
+      `INSERT INTO CMDB_CLUSTER(CLUSTER_NAME,CLUSTER_TYPE,DESCRIPTION,VIP,STATUS) VALUES(:1,:2,:3,:4,:5)`,
+      [clusterName, clusterType, description, vip, status || 'NORMAL']
+    );
+    await db.execute(
+      `INSERT INTO SYS_AUDIT_LOG(USER_ID,USERNAME,ACTION,"RESOURCE",STATUS) VALUES(:1,:2,:3,:4,:5)`,
+      [req.user.userId, req.user.username, 'CREATE_CLUSTER', clusterName, 'SUCCESS']
+    );
+    res.json({ code: 200, msg: '集群创建成功' });
+  } catch (err) { res.json({ code: 500, msg: err.message }); }
+});
+
+// PUT /api/cmdb/clusters/:id  更新集群
+router.put('/clusters/:id', async (req, res) => {
+  if (!['ADMIN', 'DBA'].includes(req.user.role)) return res.json({ code: 403, msg: '权限不足' });
+  const { clusterName, clusterType, description, vip, status } = req.body;
+  try {
+    const old = await db.execute(`SELECT CLUSTER_NAME FROM CMDB_CLUSTER WHERE CLUSTER_ID=:1`, [req.params.id]);
+    if (!old.rows.length) return res.json({ code: 404, msg: '集群不存在' });
+    await db.execute(
+      `UPDATE CMDB_CLUSTER SET CLUSTER_NAME=:1,CLUSTER_TYPE=:2,DESCRIPTION=:3,VIP=:4,STATUS=:5,UPDATED_AT=SYSTIMESTAMP WHERE CLUSTER_ID=:6`,
+      [clusterName, clusterType, description, vip, status, req.params.id]
+    );
+    await db.execute(
+      `INSERT INTO SYS_AUDIT_LOG(USER_ID,USERNAME,ACTION,"RESOURCE",STATUS) VALUES(:1,:2,:3,:4,:5)`,
+      [req.user.userId, req.user.username, 'UPDATE_CLUSTER', old.rows[0].CLUSTER_NAME, 'SUCCESS']
+    );
+    res.json({ code: 200, msg: '集群更新成功' });
+  } catch (err) { res.json({ code: 500, msg: err.message }); }
+});
+
+// DELETE /api/cmdb/clusters/:id  删除集群
+router.delete('/clusters/:id', async (req, res) => {
+  if (!['ADMIN', 'DBA'].includes(req.user.role)) return res.json({ code: 403, msg: '权限不足' });
+  try {
+    const old = await db.execute(`SELECT CLUSTER_NAME FROM CMDB_CLUSTER WHERE CLUSTER_ID=:1`, [req.params.id]);
+    if (!old.rows.length) return res.json({ code: 404, msg: '集群不存在' });
+    await db.execute(`DELETE FROM CMDB_CLUSTER WHERE CLUSTER_ID=:1`, [req.params.id]);
+    await db.execute(
+      `INSERT INTO SYS_AUDIT_LOG(USER_ID,USERNAME,ACTION,"RESOURCE",STATUS) VALUES(:1,:2,:3,:4,:5)`,
+      [req.user.userId, req.user.username, 'DELETE_CLUSTER', old.rows[0].CLUSTER_NAME, 'SUCCESS']
+    );
+    res.json({ code: 200, msg: '集群已删除' });
+  } catch (err) { res.json({ code: 500, msg: err.message }); }
+});
+
+// POST /api/cmdb/clusters/:id/members  添加集群成员
+router.post('/clusters/:id/members', async (req, res) => {
+  if (!['ADMIN', 'DBA'].includes(req.user.role)) return res.json({ code: 403, msg: '权限不足' });
+  const { instanceId, nodeRole } = req.body;
+  if (!instanceId) return res.json({ code: 400, msg: '实例ID不能为空' });
+  try {
+    const cluster = await db.execute(`SELECT CLUSTER_NAME FROM CMDB_CLUSTER WHERE CLUSTER_ID=:1`, [req.params.id]);
+    if (!cluster.rows.length) return res.json({ code: 404, msg: '集群不存在' });
+    const dup = await db.execute(`SELECT MEMBER_ID FROM CMDB_CLUSTER_MEMBER WHERE CLUSTER_ID=:1 AND INSTANCE_ID=:2`, [req.params.id, instanceId]);
+    if (dup.rows.length) return res.json({ code: 409, msg: '该实例已在集群中' });
+    await db.execute(
+      `INSERT INTO CMDB_CLUSTER_MEMBER(CLUSTER_ID,INSTANCE_ID,NODE_ROLE) VALUES(:1,:2,:3)`,
+      [req.params.id, instanceId, nodeRole || 'PRIMARY']
+    );
+    res.json({ code: 200, msg: '成员添加成功' });
+  } catch (err) { res.json({ code: 500, msg: err.message }); }
+});
+
+// DELETE /api/cmdb/clusters/:id/members/:instanceId  移除集群成员
+router.delete('/clusters/:id/members/:instanceId', async (req, res) => {
+  if (!['ADMIN', 'DBA'].includes(req.user.role)) return res.json({ code: 403, msg: '权限不足' });
+  try {
+    await db.execute(`DELETE FROM CMDB_CLUSTER_MEMBER WHERE CLUSTER_ID=:1 AND INSTANCE_ID=:2`, [req.params.id, req.params.instanceId]);
+    res.json({ code: 200, msg: '成员已移除' });
   } catch (err) { res.json({ code: 500, msg: err.message }); }
 });
 

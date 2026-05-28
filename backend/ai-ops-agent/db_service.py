@@ -101,7 +101,8 @@ async def insert_returning_id(sql: str, params=None) -> int:
             all_params = [_sanitize_bind(p) for p in (params or [])] + [out_id]
             cur.execute(sql, all_params)
             conn.commit()
-            return out_id.getvalue()
+            val = out_id.getvalue()
+            return val[0] if isinstance(val, list) and val else val
 
 
 async def get_metrics_window(instance_id: int, minutes_before: int = 15, minutes_after: int = 15) -> list[dict]:

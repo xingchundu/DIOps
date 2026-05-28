@@ -25,7 +25,7 @@ export const useAuthStore = defineStore('auth', {
       if (!s.user) return false
       if (s.user.role === 'ADMIN') return true
       const menus = s.user.menus
-      if (!Array.isArray(menus) || menus.length === 0) return true
+      if (!Array.isArray(menus) || menus.length === 0) return false
       return menus.some(m => routeMatchesMenu(path, m))
     },
   },
@@ -38,7 +38,7 @@ export const useAuthStore = defineStore('auth', {
       if (this.user.role === 'ADMIN') return true
       if (p === '/settings/profile') return true
       const menus = this.user.menus
-      if (!Array.isArray(menus) || menus.length === 0) return true
+      if (!Array.isArray(menus) || menus.length === 0) return false
       return menus.some(m => routeMatchesMenu(p, m))
     },
     async login(credentials) {

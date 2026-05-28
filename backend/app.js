@@ -60,6 +60,7 @@ app.use('/api/custom-metrics',  require('./src/routes/customMetrics'));
 app.use('/api/workbench',       require('./src/routes/sqlWorkbench'));
 app.use('/api/service-catalog', require('./src/routes/serviceCatalog'));
 app.use('/api/system-config', require('./src/routes/systemConfig'));
+app.use('/api/deploy',        require('./src/routes/deploy'));
 
 // 兜底404
 app.use((req, res) => res.status(404).json({ code: 404, msg: `接口不存在: ${req.method} ${req.path}` }));

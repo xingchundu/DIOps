@@ -164,9 +164,11 @@ async function save() {
 }
 
 async function toggleStatus(row, status) {
-  if (status === 0) await userApi.disable(row.USER_ID)
-  else await userApi.enable(row.USER_ID)
-  ElMessage.success(status === 1 ? '已启用' : '已禁用'); load()
+  try {
+    if (status === 0) await userApi.disable(row.USER_ID)
+    else await userApi.enable(row.USER_ID)
+    ElMessage.success(status === 1 ? '已启用' : '已禁用'); load()
+  } catch (e) { ElMessage.error(e.message || '操作失败') }
 }
 
 function resetPwd(row) { resetTarget.value = row; newPwd.value = ''; resetVisible.value = true }
@@ -177,7 +179,8 @@ async function doReset() {
   try {
     await authApi.resetPwd({ userId: resetTarget.value.USER_ID, newPassword: newPwd.value })
     ElMessage.success('密码重置成功'); resetVisible.value = false
-  } finally { resetting.value = false }
+  } catch (e) { ElMessage.error(e.message || '密码重置失败') }
+  finally { resetting.value = false }
 }
 
 onMounted(async () => {

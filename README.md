@@ -7,6 +7,74 @@
 
 ---
 
+### v3.22.0 — 2026-05-28  自动安装部署-部署模板与任务管理（F-45）
+
+> 部署模板管理 + 部署任务执行引擎，支持 Oracle/MySQL/PostgreSQL/达梦 安装部署全流程。
+
+#### 功能增强：自动安装部署（F-45）
+
+**需求来源：** SRS F-45 自动安装部署，需要部署模板和任务管理
+
+`DEPLOY_TEMPLATE` 和 `DEPLOY_JOB` 表在 init.sql 中已有基础定义，但无后端路由和前端页面。本次增强为完整的部署模板管理和部署任务执行系统，集成到自动化运维中心。
+
+**核心变更：**
+
+1. **数据库迁移**（`backend/sql/migration_deploy.sql`）：
+   - DEPLOY_TEMPLATE 增强：新增 DEPLOY_TYPE（安装/升级/配置/迁移）、DB_TYPE（数据库类型）、STEPS_JSON（步骤定义）、SORT_ORDER
+   - DEPLOY_JOB 增强：新增 HOST_ID、TARGET_IP、STEPS_LOG（步骤日志）、UPDATED_AT、CANCELLED_BY、CANCELLED_AT
+   - 种子数据：4 个部署模板（Oracle/MySQL/PostgreSQL/达梦单机安装）
+
+2. **部署步骤类型**：
+
+   | 类型 | 说明 | 示例 |
+   |------|------|------|
+   | `CHECK` | 前置条件检查 | 连通性验证、环境检查 |
+   | `SHELL` | 本地 Shell 命令 | 安装软件、配置内核参数 |
+   | `SQL` | 目标实例 SQL 执行 | 创建数据库、初始化表 |
+
+3. **后端 API**（`backend/src/routes/deploy.js`）：
+
+   模板管理：
+
+   | 方法 | 路径 | 说明 |
+   |------|------|------|
+   | GET | `/api/deploy/templates` | 模板列表 |
+   | GET | `/api/deploy/templates/:id` | 模板详情 |
+   | POST | `/api/deploy/templates` | 新增模板（ADMIN/DBA） |
+   | PUT | `/api/deploy/templates/:id` | 编辑模板（ADMIN/DBA） |
+
+   部署任务：
+
+   | 方法 | 路径 | 说明 |
+   |------|------|------|
+   | GET | `/api/deploy/jobs` | 任务列表（分页+筛选） |
+   | GET | `/api/deploy/jobs/:id` | 任务详情（含步骤日志） |
+   | POST | `/api/deploy/jobs` | 创建部署任务 |
+   | POST | `/api/deploy/jobs/:id/execute` | 执行/重试任务 |
+   | POST | `/api/deploy/jobs/:id/cancel` | 取消任务 |
+   | GET | `/api/deploy/jobs/:id/log` | 实时日志 |
+   | GET | `/api/deploy/stats` | 统计 |
+
+4. **部署执行引擎**（`backend/src/services/deployRunner.js`）：
+   - 解析模板 STEPS_JSON 中的步骤定义，按顺序执行
+   - 每步骤记录：状态、开始时间、耗时、输出、错误
+   - 支持任务取消（RUNNING 状态下设置取消标记，步骤间检查）
+   - 状态流转：PENDING → RUNNING → SUCCESS/FAILED/CANCELLED
+
+5. **前端集成**（`frontend/src/views/automation/AutomationCenter.vue`）：
+   - 自动化中心新增「安装部署」tab
+   - 部署模板：卡片网格展示，支持新建/编辑/发起部署
+   - 部署任务：表格列表，支持筛选/执行/重试/取消/查看详情
+   - 任务详情抽屉：步骤进度条 + 每步骤日志 + 操作按钮
+
+**部署模板步骤示例（Oracle 单机安装）：**
+
+```
+环境检查(CHECK) → 创建用户(SHELL) → 配置内核参数(SHELL) → 安装软件(SHELL) → 创建实例(SQL) → 验证(CHECK)
+```
+
+---
+
 ### v3.21.0 — 2026-05-28  系统配置-可视化参数管理（F-69）
 
 > 全局系统参数（采集频率、告警延迟、保留策略、连接池）可视化配置，修改即时生效无需重启。

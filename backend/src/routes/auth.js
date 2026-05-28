@@ -187,11 +187,18 @@ router.post('/reset-password', authMiddleware, async (req, res) => {
   if (req.user.role !== 'ADMIN') return res.json({ code: 403, msg: '权限不足' });
   const { userId, newPassword } = req.body;
   if (!userId || !newPassword) return res.json({ code: 400, msg: '参数缺失' });
+  if (newPassword.length < 8) return res.json({ code: 400, msg: '密码长度不能少于8位' });
+  const strongPwd = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d).{8,}$/;
+  if (!strongPwd.test(newPassword)) return res.json({ code: 400, msg: '密码需包含大小写字母和数字（至少8位）' });
   try {
     const hash = await bcrypt.hash(newPassword, 10);
     await db.execute(
       `UPDATE SYS_USER SET PASSWORD_HASH=:1, PWD_CHANGED=SYSTIMESTAMP, UPDATED_AT=SYSTIMESTAMP WHERE USER_ID=:2`,
       [hash, userId]
+    );
+    await db.execute(
+      `INSERT INTO SYS_AUDIT_LOG (USER_ID,USERNAME,ACTION,IP_ADDR,STATUS,DETAIL) VALUES(:1,:2,:3,:4,:5,:6)`,
+      [req.user.userId, req.user.username, 'RESET_PASSWORD', getClientIp(req), 'SUCCESS', `重置用户ID=${userId}密码`]
     );
     res.json({ code: 200, msg: '密码重置成功' });
   } catch (err) {

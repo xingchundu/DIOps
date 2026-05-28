@@ -11,6 +11,7 @@
         <el-menu-item index="ha"><el-icon><Connection /></el-icon><span>高可用与容灾</span></el-menu-item>
         <el-menu-item index="capacity"><el-icon><TrendCharts /></el-icon><span>容量预测</span></el-menu-item>
         <el-menu-item index="backup"><el-icon><FolderOpened /></el-icon><span>备份恢复中心</span></el-menu-item>
+        <el-menu-item index="deploy"><el-icon><SetUp /></el-icon><span>安装部署</span></el-menu-item>
       </el-menu>
     </aside>
 
@@ -808,6 +809,78 @@
           </el-tab-pane>
         </el-tabs>
       </div>
+
+      <!-- ══════ 8. 安装部署 ══════ -->
+      <div v-if="activeModule==='deploy'">
+        <el-tabs v-model="deployTab" type="card">
+          <!-- 部署模板 -->
+          <el-tab-pane label="部署模板" name="templates">
+            <div class="toolbar">
+              <el-button native-type="button" :loading="deployTemplatesLoading" @click.prevent.stop="refreshDeployTemplates">
+                <el-icon class="el-icon--left"><Refresh /></el-icon>刷新
+              </el-button>
+              <el-button v-if="canMutate" type="primary" @click="openDeployTemplateDlg()">新建模板</el-button>
+            </div>
+            <div v-loading="deployTemplatesLoading" class="deploy-tpl-grid">
+              <el-card v-for="tpl in deployTemplates" :key="tpl.TEMPLATE_ID" class="deploy-tpl-card" shadow="hover">
+                <div class="deploy-tpl-head">
+                  <span class="deploy-tpl-name">{{ tpl.TEMPLATE_NAME }}</span>
+                  <el-tag :type="deployTypeColor(tpl.DEPLOY_TYPE)" size="small">{{ deployTypeLabel(tpl.DEPLOY_TYPE) }}</el-tag>
+                </div>
+                <div class="deploy-tpl-meta">
+                  <el-tag size="small" type="info">{{ tpl.DB_TYPE }}</el-tag>
+                  <span>{{ tpl.DEPLOY_MODE }}</span>
+                  <span>{{ deployStepCount(tpl) }} 步骤</span>
+                </div>
+                <div class="deploy-tpl-desc">{{ tpl.DESCRIPTION || '无描述' }}</div>
+                <div class="deploy-tpl-actions">
+                  <el-button link type="primary" size="small" @click="openDeployTemplateDlg(tpl)">编辑</el-button>
+                  <el-button link type="success" size="small" @click="openCreateJobDlg(tpl)">发起部署</el-button>
+                </div>
+              </el-card>
+              <el-empty v-if="!deployTemplatesLoading && !deployTemplates.length" description="暂无模板" />
+            </div>
+          </el-tab-pane>
+
+          <!-- 部署任务 -->
+          <el-tab-pane label="部署任务" name="jobs">
+            <div class="toolbar">
+              <el-select v-model="deployJobFilter.status" placeholder="状态" clearable style="width:120px" @change="loadDeployJobs">
+                <el-option label="待执行" value="PENDING"/><el-option label="执行中" value="RUNNING"/>
+                <el-option label="成功" value="SUCCESS"/><el-option label="失败" value="FAILED"/>
+                <el-option label="已取消" value="CANCELLED"/>
+              </el-select>
+              <el-button native-type="button" :loading="deployJobsLoading" @click.prevent.stop="refreshDeployJobs">
+                <el-icon class="el-icon--left"><Refresh /></el-icon>刷新
+              </el-button>
+              <el-button v-if="canMutate" type="primary" @click="openCreateJobDlg()">新建任务</el-button>
+            </div>
+            <el-table v-loading="deployJobsLoading" :data="deployJobs" size="small" stripe>
+              <template #empty><el-empty description="暂无任务" /></template>
+              <el-table-column prop="JOB_ID" label="任务ID" width="80"/>
+              <el-table-column prop="TEMPLATE_NAME" label="模板" min-width="150" show-overflow-tooltip/>
+              <el-table-column prop="INSTANCE_NAME" label="目标实例" width="130"/>
+              <el-table-column prop="TARGET_IP" label="目标IP" width="130"/>
+              <el-table-column prop="STATUS" label="状态" width="90">
+                <template #default="{row}">
+                  <el-tag :type="deployStatusColor(row.STATUS)" size="small">{{ deployStatusLabel(row.STATUS) }}</el-tag>
+                </template>
+              </el-table-column>
+              <el-table-column prop="LOG_SUMMARY" label="摘要" min-width="200" show-overflow-tooltip/>
+              <el-table-column prop="CREATED_BY_NAME" label="创建人" width="80"/>
+              <el-table-column prop="CREATED_AT" label="创建时间" width="160"><template #default="{row}">{{fmtTime(row.CREATED_AT)}}</template></el-table-column>
+              <el-table-column label="操作" width="200">
+                <template #default="{row}">
+                  <el-button link type="primary" @click="viewDeployJob(row.JOB_ID)">详情</el-button>
+                  <el-button v-if="canMutate && row.STATUS==='PENDING'" link type="success" @click="execDeployJob(row.JOB_ID)">执行</el-button>
+                  <el-button v-if="canMutate && (row.STATUS==='PENDING'||row.STATUS==='RUNNING')" link type="danger" @click="cancelDeployJobAction(row.JOB_ID)">取消</el-button>
+                  <el-button v-if="canMutate && row.STATUS==='FAILED'" link type="warning" @click="execDeployJob(row.JOB_ID)">重试</el-button>
+                </template>
+              </el-table-column>
+            </el-table>
+          </el-tab-pane>
+        </el-tabs>
+      </div>
     </div>
 
     <!-- ══════ Dialogs ══════ -->
@@ -1509,6 +1582,108 @@
         <el-button type="primary" :loading="saving" @click="saveDdlRule">保存</el-button>
       </template>
     </el-dialog>
+
+    <!-- 部署模板 Dialog -->
+    <el-dialog v-model="deployTemplateDlgVisible" :title="deployTemplateForm.templateId?'编辑模板':'新建部署模板'" width="680px">
+      <el-form :model="deployTemplateForm" label-width="100px" size="small">
+        <el-form-item label="模板名称"><el-input v-model="deployTemplateForm.templateName"/></el-form-item>
+        <el-form-item label="部署类型">
+          <el-select v-model="deployTemplateForm.deployType">
+            <el-option label="安装" value="INSTALL"/><el-option label="升级" value="UPGRADE"/>
+            <el-option label="配置" value="CONFIG"/><el-option label="迁移" value="MIGRATE"/>
+          </el-select>
+        </el-form-item>
+        <el-form-item label="数据库类型">
+          <el-select v-model="deployTemplateForm.dbType">
+            <el-option label="ALL(全部)" value="ALL"/><el-option v-for="t in dbTypes" :key="t" :label="t" :value="t"/>
+          </el-select>
+        </el-form-item>
+        <el-form-item label="部署模式">
+          <el-select v-model="deployTemplateForm.deployMode">
+            <el-option label="单机" value="SINGLE"/><el-option label="主从" value="REPLICA"/><el-option label="集群" value="CLUSTER"/>
+          </el-select>
+        </el-form-item>
+        <el-form-item label="描述"><el-input v-model="deployTemplateForm.description" type="textarea" :rows="2"/></el-form-item>
+        <el-form-item label="参数Schema">
+          <el-input v-model="deployTemplateForm.paramSchema" type="textarea" :rows="2" placeholder='{"sid":"string","oracleHome":"string"}' style="font-family:monospace;font-size:12px"/>
+        </el-form-item>
+        <el-form-item label="步骤定义">
+          <el-input v-model="deployTemplateForm.stepsJson" type="textarea" :rows="6" placeholder='[{"name":"环境检查","type":"CHECK","command":"check_env"}]' style="font-family:monospace;font-size:12px"/>
+        </el-form-item>
+        <el-form-item label="启用"><el-switch v-model="deployTemplateForm.enabled"/></el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="deployTemplateDlgVisible=false">取消</el-button>
+        <el-button type="primary" :loading="saving" @click="saveDeployTemplate">保存</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 创建部署任务 Dialog -->
+    <el-dialog v-model="createJobDlgVisible" title="创建部署任务" width="560px">
+      <el-form :model="createJobForm" label-width="100px" size="small">
+        <el-form-item label="部署模板">
+          <el-select v-model="createJobForm.templateId" style="width:100%" placeholder="选择模板">
+            <el-option v-for="t in deployTemplates" :key="t.TEMPLATE_ID" :label="t.TEMPLATE_NAME" :value="t.TEMPLATE_ID">
+              <span>{{ t.TEMPLATE_NAME }}</span>
+              <el-tag size="small" style="margin-left:8px">{{ t.DB_TYPE }}</el-tag>
+            </el-option>
+          </el-select>
+        </el-form-item>
+        <el-form-item label="目标实例">
+          <el-select v-model="createJobForm.instanceId" clearable filterable style="width:100%" placeholder="选择实例（可选）">
+            <el-option v-for="i in instances" :key="i.INSTANCE_ID" :label="i.INSTANCE_NAME" :value="i.INSTANCE_ID"/>
+          </el-select>
+        </el-form-item>
+        <el-form-item label="目标IP"><el-input v-model="createJobForm.targetIp" placeholder="目标服务器IP"/></el-form-item>
+        <el-form-item label="参数JSON">
+          <el-input v-model="createJobForm.paramsJson" type="textarea" :rows="4" placeholder='{"sid":"orcl","oracleHome":"/opt/oracle"}' style="font-family:monospace;font-size:12px"/>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="createJobDlgVisible=false">取消</el-button>
+        <el-button type="primary" :loading="saving" @click="createDeployJob">创建并执行</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 部署任务详情 Drawer -->
+    <el-drawer v-model="deployJobDetailVisible" title="部署任务详情" size="600px" direction="rtl">
+      <div v-if="deployJobDetail">
+        <el-descriptions :column="2" border size="small" style="margin-bottom:16px">
+          <el-descriptions-item label="任务ID">{{ deployJobDetail.JOB_ID }}</el-descriptions-item>
+          <el-descriptions-item label="模板">{{ deployJobDetail.TEMPLATE_NAME }}</el-descriptions-item>
+          <el-descriptions-item label="目标实例">{{ deployJobDetail.INSTANCE_NAME || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="目标IP">{{ deployJobDetail.TARGET_IP || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="状态">
+            <el-tag :type="deployStatusColor(deployJobDetail.STATUS)" size="small">{{ deployStatusLabel(deployJobDetail.STATUS) }}</el-tag>
+          </el-descriptions-item>
+          <el-descriptions-item label="摘要" :span="2">{{ deployJobDetail.LOG_SUMMARY || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="开始时间">{{ fmtTime(deployJobDetail.START_TIME) }}</el-descriptions-item>
+          <el-descriptions-item label="结束时间">{{ fmtTime(deployJobDetail.END_TIME) }}</el-descriptions-item>
+        </el-descriptions>
+
+        <div class="deploy-steps-title">执行步骤</div>
+        <div v-if="deployJobSteps.length" class="deploy-steps">
+          <div v-for="(step, idx) in deployJobSteps" :key="idx" class="deploy-step-item" :class="'step-' + step.status.toLowerCase()">
+            <div class="deploy-step-head">
+              <span class="deploy-step-idx">{{ idx + 1 }}</span>
+              <span class="deploy-step-name">{{ step.name }}</span>
+              <el-tag :type="deployStepStatusColor(step.status)" size="small">{{ step.status }}</el-tag>
+              <span v-if="step.duration" class="deploy-step-dur">{{ (step.duration / 1000).toFixed(1) }}s</span>
+            </div>
+            <div v-if="step.output" class="deploy-step-output">{{ step.output }}</div>
+            <div v-if="step.error" class="deploy-step-error">{{ step.error }}</div>
+          </div>
+        </div>
+        <el-empty v-else description="暂无步骤日志" />
+
+        <div v-if="canMutate" style="margin-top:16px;display:flex;gap:8px">
+          <el-button v-if="deployJobDetail.STATUS==='PENDING'" type="success" @click="execDeployJob(deployJobDetail.JOB_ID);deployJobDetailVisible=false">执行</el-button>
+          <el-button v-if="deployJobDetail.STATUS==='FAILED'" type="warning" @click="execDeployJob(deployJobDetail.JOB_ID);deployJobDetailVisible=false">重试</el-button>
+          <el-button v-if="deployJobDetail.STATUS==='RUNNING'||deployJobDetail.STATUS==='PENDING'" type="danger" @click="cancelDeployJobAction(deployJobDetail.JOB_ID);deployJobDetailVisible=false">取消</el-button>
+          <el-button v-if="deployJobDetail.STATUS==='RUNNING'" @click="refreshDeployJobLog">刷新日志</el-button>
+        </div>
+      </div>
+    </el-drawer>
   </div>
 </template>
 
@@ -1516,7 +1691,7 @@
 import { ref, reactive, computed, onMounted, watch, nextTick } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useAuthStore } from '@/stores/auth.js'
-import { automationApi, cmdbApi } from '@/api/index.js'
+import { automationApi, cmdbApi, deployApi } from '@/api/index.js'
 import {
   Search, Warning, Promotion, DataAnalysis, Connection, TrendCharts, FolderOpened,
   Refresh, ArrowDown, WarningFilled, LocationFilled
@@ -1767,6 +1942,21 @@ const hasBkStatsData = computed(() => {
     || (Array.isArray(s.topFailures) && s.topFailures.length > 0)
 })
 
+// Deploy
+const deployTab = ref('templates')
+const deployTemplates = ref([])
+const deployTemplatesLoading = ref(false)
+const deployJobs = ref([])
+const deployJobsLoading = ref(false)
+const deployJobFilter = reactive({ status: '' })
+const deployTemplateDlgVisible = ref(false)
+const deployTemplateForm = reactive({ templateId: null, templateName: '', deployType: 'INSTALL', dbType: 'ALL', deployMode: 'SINGLE', description: '', paramSchema: '', stepsJson: '', enabled: true })
+const createJobDlgVisible = ref(false)
+const createJobForm = reactive({ templateId: null, instanceId: null, targetIp: '', paramsJson: '{}' })
+const deployJobDetailVisible = ref(false)
+const deployJobDetail = ref(null)
+const deployJobSteps = ref([])
+
 // ── Helpers ────────────────────────────────────────────────
 const fmtTime = t => t ? String(t).replace('T',' ').substring(0,19) : '-'
 const scoreClass = s => Number(s)>=90?'text-success':Number(s)>=70?'text-warning':'text-danger'
@@ -1783,6 +1973,12 @@ const switchTypeColor = s => ({PLANNED:'success',FAILOVER:'danger',DRILL:'warnin
 const bkTypeLabel = t => ({FULL:'全量备份',INCREMENTAL:'增量备份',LOGICAL:'逻辑备份',PHYSICAL:'物理备份'})[t]||t
 const bkTypeColor = t => ({FULL:'success',INCREMENTAL:'',LOGICAL:'warning',PHYSICAL:'info'})[t]||''
 const bkStatusColor = s => ({SUCCESS:'success',FAILED:'danger',RUNNING:'warning',PENDING:'info'})[s]||''
+const deployTypeLabel = t => ({INSTALL:'安装',UPGRADE:'升级',CONFIG:'配置',MIGRATE:'迁移'})[t]||t
+const deployTypeColor = t => ({INSTALL:'success',UPGRADE:'warning',CONFIG:'',MIGRATE:'info'})[t]||''
+const deployStepCount = tpl => { try { return JSON.parse(tpl.STEPS_JSON||'[]').length } catch { return 0 } }
+const deployStatusColor = s => ({PENDING:'info',RUNNING:'warning',SUCCESS:'success',FAILED:'danger',CANCELLED:'info'})[s]||''
+const deployStatusLabel = s => ({PENDING:'待执行',RUNNING:'执行中',SUCCESS:'成功',FAILED:'失败',CANCELLED:'已取消'})[s]||s
+const deployStepStatusColor = s => ({PENDING:'info',RUNNING:'warning',SUCCESS:'success',FAILED:'danger',SKIPPED:'info'})[s]||''
 const restoreTypeLabel = t => ({PITR:'PITR时间点',SINGLE_TABLE:'单表恢复',FLASHBACK:'闪回恢复',FULL:'全量恢复'})[t]||t
 const reportDetailCols = type => {
   const maps = {
@@ -1817,6 +2013,7 @@ function switchModule(key) {
   if (key==='ha') { loadTopologies(); loadSwitches(); loadDrLinks(); loadHaDashboard() }
   if (key==='capacity') { loadSnapshots(); loadCostAnalysis() }
   if (key==='backup') { loadBackupPolicies(); loadBkRecords(); loadBkStats(); loadRestores() }
+  if (key==='deploy') { loadDeployTemplates(); loadDeployJobs() }
 }
 
 async function loadInspectTemplates() {
@@ -3011,6 +3208,151 @@ async function loadCmdbInstances() {
   instances.value = Array.isArray(d) ? d : (d?.list || [])
 }
 
+// ── DEPLOY ───────────────────────────────────────────────────
+async function loadDeployTemplates() {
+  deployTemplatesLoading.value = true
+  try {
+    const r = await deployApi.templates()
+    deployTemplates.value = r.data || []
+  } catch (e) { ElMessage.error(e?.message || '加载模板失败') }
+  deployTemplatesLoading.value = false
+}
+async function refreshDeployTemplates() {
+  await loadDeployTemplates()
+  ElMessage.success('模板列表已刷新')
+}
+async function loadDeployJobs() {
+  deployJobsLoading.value = true
+  try {
+    const p = {}
+    if (deployJobFilter.status) p.status = deployJobFilter.status
+    const r = await deployApi.jobs(p)
+    const d = r.data
+    deployJobs.value = Array.isArray(d) ? d : (d?.list || [])
+  } catch (e) { ElMessage.error(e?.message || '加载任务失败') }
+  deployJobsLoading.value = false
+}
+async function refreshDeployJobs() {
+  await loadDeployJobs()
+  ElMessage.success('任务列表已刷新')
+}
+function openDeployTemplateDlg(tpl) {
+  if (tpl) {
+    deployTemplateForm.templateId = tpl.TEMPLATE_ID
+    deployTemplateForm.templateName = tpl.TEMPLATE_NAME
+    deployTemplateForm.deployType = tpl.DEPLOY_TYPE || 'INSTALL'
+    deployTemplateForm.dbType = tpl.DB_TYPE || 'ALL'
+    deployTemplateForm.deployMode = tpl.DEPLOY_MODE || 'SINGLE'
+    deployTemplateForm.description = tpl.DESCRIPTION || ''
+    deployTemplateForm.paramSchema = typeof tpl.PARAM_SCHEMA === 'object' ? JSON.stringify(tpl.PARAM_SCHEMA, null, 2) : (tpl.PARAM_SCHEMA || '')
+    deployTemplateForm.stepsJson = typeof tpl.STEPS_JSON === 'object' ? JSON.stringify(tpl.STEPS_JSON, null, 2) : (tpl.STEPS_JSON || '')
+    deployTemplateForm.enabled = !!tpl.ENABLED
+  } else {
+    deployTemplateForm.templateId = null
+    deployTemplateForm.templateName = ''
+    deployTemplateForm.deployType = 'INSTALL'
+    deployTemplateForm.dbType = 'ALL'
+    deployTemplateForm.deployMode = 'SINGLE'
+    deployTemplateForm.description = ''
+    deployTemplateForm.paramSchema = ''
+    deployTemplateForm.stepsJson = ''
+    deployTemplateForm.enabled = true
+  }
+  deployTemplateDlgVisible.value = true
+}
+async function saveDeployTemplate() {
+  if (!deployTemplateForm.templateName) return ElMessage.warning('模板名称必填')
+  saving.value = true
+  try {
+    const d = {
+      templateName: deployTemplateForm.templateName,
+      deployType: deployTemplateForm.deployType,
+      dbType: deployTemplateForm.dbType,
+      deployMode: deployTemplateForm.deployMode,
+      description: deployTemplateForm.description,
+      paramSchema: deployTemplateForm.paramSchema || null,
+      stepsJson: deployTemplateForm.stepsJson || null,
+      enabled: deployTemplateForm.enabled,
+    }
+    if (deployTemplateForm.templateId) {
+      await deployApi.updateTemplate(deployTemplateForm.templateId, d)
+      ElMessage.success('模板已更新')
+    } else {
+      await deployApi.createTemplate(d)
+      ElMessage.success('模板已创建')
+    }
+    deployTemplateDlgVisible.value = false
+    loadDeployTemplates()
+  } catch (e) { ElMessage.error(e?.message || '保存失败') }
+  saving.value = false
+}
+function openCreateJobDlg(tpl) {
+  createJobForm.templateId = tpl ? tpl.TEMPLATE_ID : null
+  createJobForm.instanceId = null
+  createJobForm.targetIp = ''
+  createJobForm.paramsJson = '{}'
+  createJobDlgVisible.value = true
+}
+async function createDeployJob() {
+  if (!createJobForm.templateId) return ElMessage.warning('请选择模板')
+  saving.value = true
+  try {
+    let params = {}
+    try { params = JSON.parse(createJobForm.paramsJson || '{}') } catch { return ElMessage.warning('参数JSON格式错误'); saving.value = false }
+    const r = await deployApi.createJob({
+      templateId: createJobForm.templateId,
+      instanceId: createJobForm.instanceId,
+      targetIp: createJobForm.targetIp || null,
+      params,
+    })
+    ElMessage.success('任务已创建')
+    createJobDlgVisible.value = false
+    loadDeployJobs()
+    // 自动执行
+    if (r.data?.jobId) {
+      await deployApi.executeJob(r.data.jobId)
+      ElMessage.success('部署已开始执行')
+      loadDeployJobs()
+    }
+  } catch (e) { ElMessage.error(e?.message || '创建失败') }
+  saving.value = false
+}
+async function viewDeployJob(jobId) {
+  try {
+    const r = await deployApi.job(jobId)
+    deployJobDetail.value = r.data
+    let steps = []
+    try { steps = JSON.parse(r.data?.STEPS_LOG || '[]') } catch {}
+    deployJobSteps.value = steps
+    deployJobDetailVisible.value = true
+  } catch (e) { ElMessage.error(e?.message || '加载详情失败') }
+}
+async function refreshDeployJobLog() {
+  if (!deployJobDetail.value) return
+  try {
+    const r = await deployApi.jobLog(deployJobDetail.value.JOB_ID)
+    deployJobDetail.value.STATUS = r.data?.status
+    deployJobSteps.value = r.data?.steps || []
+  } catch (e) { ElMessage.error(e?.message || '刷新日志失败') }
+}
+async function execDeployJob(jobId) {
+  try {
+    await deployApi.executeJob(jobId)
+    ElMessage.success('部署已开始执行')
+    loadDeployJobs()
+  } catch (e) { ElMessage.error(e?.message || '执行失败') }
+}
+async function cancelDeployJobAction(jobId) {
+  try {
+    await ElMessageBox.confirm('确认取消此任务？', '确认', { type: 'warning' })
+  } catch { return }
+  try {
+    await deployApi.cancelJob(jobId)
+    ElMessage.success('任务已取消')
+    loadDeployJobs()
+  } catch (e) { ElMessage.error(e?.message || '取消失败') }
+}
+
 // ── Init ───────────────────────────────────────────────────
 onMounted(async () => {
   await loadCmdbInstances()
@@ -3097,6 +3439,27 @@ onMounted(async () => {
 .fault-dashboard-bar { display:flex; gap:12px; flex-wrap:wrap; margin-bottom:12px; padding:12px; background:#fff; border-radius:8px; border:1px solid #e4e7ed }
 .dashboard-stat { min-width:90px; text-align:center }
 .ds-value { font-size:20px; font-weight:700 }
+.deploy-tpl-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(300px,1fr)); gap:12px; margin-bottom:16px }
+.deploy-tpl-card { cursor:pointer; transition:box-shadow .2s }
+.deploy-tpl-card:hover { box-shadow:0 4px 12px rgba(0,0,0,.1) }
+.deploy-tpl-head { display:flex; align-items:center; justify-content:space-between; margin-bottom:8px }
+.deploy-tpl-name { font-size:14px; font-weight:600; color:#303133 }
+.deploy-tpl-meta { display:flex; gap:8px; align-items:center; font-size:12px; color:#909399; margin-bottom:8px }
+.deploy-tpl-desc { font-size:12px; color:#606266; line-height:1.5; margin-bottom:10px; min-height:32px }
+.deploy-tpl-actions { display:flex; gap:8px; justify-content:flex-end }
+.deploy-steps-title { font-size:14px; font-weight:600; margin-bottom:12px; color:#303133 }
+.deploy-steps { display:flex; flex-direction:column; gap:8px }
+.deploy-step-item { padding:10px 12px; border:1px solid #e4e7ed; border-radius:6px; background:#fafafa }
+.deploy-step-item.step-success { border-color:#b7eb8f; background:#f6ffed }
+.deploy-step-item.step-failed { border-color:#ffa39e; background:#fff1f0 }
+.deploy-step-item.step-running { border-color:#ffe58f; background:#fffbe6 }
+.deploy-step-item.step-skipped { border-color:#d9d9d9; background:#f5f5f5 }
+.deploy-step-head { display:flex; align-items:center; gap:8px; margin-bottom:4px }
+.deploy-step-idx { width:20px; height:20px; border-radius:50%; background:#1890ff; color:#fff; font-size:11px; display:flex; align-items:center; justify-content:center; flex-shrink:0 }
+.deploy-step-name { font-size:13px; font-weight:600; flex:1 }
+.deploy-step-dur { font-size:11px; color:#909399 }
+.deploy-step-output { font-size:12px; color:#606266; white-space:pre-wrap; word-break:break-all; margin-top:4px }
+.deploy-step-error { font-size:12px; color:#f56c6c; white-space:pre-wrap; word-break:break-all; margin-top:4px }
 </style>
 
 <style>

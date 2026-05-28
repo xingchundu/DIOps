@@ -19,6 +19,8 @@ TOP_K = 5              # 检索Top-K块
 
 def _split_chunks(text: str, chunk_size: int = CHUNK_SIZE, overlap: int = CHUNK_OVERLAP) -> list[str]:
     """将文本按固定大小分块，带重叠"""
+    if not text:
+        return []
     chunks = []
     start = 0
     while start < len(text):
@@ -132,11 +134,11 @@ async def chat_with_rag(
     ChatOps 问答主入口：RAG检索 + LLM生成答案 + 写入历史
     返回: {answer, retrieved_docs, session_id}
     """
-    # 1. 记录用户消息
+    # 1. 记录用户消息（用户消息不记录LLM模型）
     await db.execute(
-        """INSERT INTO AI_CHAT_HISTORY(SESSION_ID, ROLE, CONTENT, INSTANCE_ID, LLM_MODEL, CREATED_BY)
-           VALUES(:1,'user',:2,:3,:4,:5)""",
-        [session_id, question, instance_id, llm.get_model_name(), created_by]
+        """INSERT INTO AI_CHAT_HISTORY(SESSION_ID, ROLE, CONTENT, INSTANCE_ID, CREATED_BY)
+           VALUES(:1,'user',:2,:3,:4)""",
+        [session_id, question, instance_id, created_by]
     )
 
     # 2. RAG 检索相关知识

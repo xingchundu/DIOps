@@ -226,11 +226,13 @@ async function remove(row) {
   } catch {
     return
   }
-  const r = await rbacApi.deleteRole(row.ROLE_ID)
-  if (r.code === 200) {
-    ElMessage.success(r.msg || '已删除')
-    await load()
-  }
+  try {
+    const r = await rbacApi.deleteRole(row.ROLE_ID)
+    if (r.code === 200) {
+      ElMessage.success(r.msg || '已删除')
+      await load()
+    } else { ElMessage.error(r.msg || '删除失败') }
+  } catch (e) { ElMessage.error(e.message || '删除失败') }
 }
 
 onMounted(async () => {
