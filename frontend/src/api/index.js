@@ -244,8 +244,6 @@ export const automationApi = {
   restoreTasks: () => http.get('/automation/backup/restores'),
   createRestoreTask: d => http.post('/automation/backup/restores', d),
   executeRestoreTask: id => http.post(`/automation/backup/restores/${id}/execute`),
-  // 兼容
-  automationExecLog: () => http.get('/automation/exec-log'),
 }
 export const userApi = {
   list: p => http.get('/users', { params: p }), create: d => http.post('/users', d),

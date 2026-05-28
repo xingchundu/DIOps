@@ -4,10 +4,11 @@
  */
 const router = require('express').Router();
 const db = require('../config/db');
-const { authMiddleware } = require('../middleware/auth');
+const { authMiddleware, requireRole } = require('../middleware/auth');
 const { evaluateExpression, executeCustomSql, executePanelMetrics } = require('../services/customMetricService');
 
 router.use(authMiddleware);
+const adminDbaOps = requireRole('ADMIN', 'DBA', 'OPS');
 
 // ─── 面板 CRUD ────────────────────────────────────────────────────
 
@@ -42,7 +43,7 @@ router.get('/panels/:id', async (req, res) => {
 });
 
 // POST /api/custom-metrics/panels — 创建面板
-router.post('/panels', async (req, res) => {
+router.post('/panels', adminDbaOps, async (req, res) => {
   try {
     const { panelName, description, dbType, layoutJson, enabled, sortOrder } = req.body;
     if (!panelName) return res.json({ code: 400, msg: '面板名称必填' });
@@ -59,7 +60,7 @@ router.post('/panels', async (req, res) => {
 });
 
 // PUT /api/custom-metrics/panels/:id — 更新面板
-router.put('/panels/:id', async (req, res) => {
+router.put('/panels/:id', adminDbaOps, async (req, res) => {
   try {
     const { panelName, description, dbType, layoutJson, enabled, sortOrder } = req.body;
     await db.execute(
@@ -75,7 +76,7 @@ router.put('/panels/:id', async (req, res) => {
 });
 
 // DELETE /api/custom-metrics/panels/:id — 删除面板（级联删除指标）
-router.delete('/panels/:id', async (req, res) => {
+router.delete('/panels/:id', adminDbaOps, async (req, res) => {
   try {
     await db.execute(`DELETE FROM MONITOR_CUSTOM_PANEL WHERE PANEL_ID = :1`, [req.params.id]);
     res.json({ code: 200, msg: '删除成功' });
@@ -85,7 +86,7 @@ router.delete('/panels/:id', async (req, res) => {
 // ─── 指标 CRUD ────────────────────────────────────────────────────
 
 // POST /api/custom-metrics/metrics — 创建指标
-router.post('/metrics', async (req, res) => {
+router.post('/metrics', adminDbaOps, async (req, res) => {
   try {
     const { panelId, metricName, metricLabel, metricType, sqlText, dbType, expression,
             instanceId, chartType, unit, thresholdWarn, thresholdCrit, color, sortOrder } = req.body;
@@ -107,7 +108,7 @@ router.post('/metrics', async (req, res) => {
 });
 
 // PUT /api/custom-metrics/metrics/:id — 更新指标
-router.put('/metrics/:id', async (req, res) => {
+router.put('/metrics/:id', adminDbaOps, async (req, res) => {
   try {
     const { metricName, metricLabel, metricType, sqlText, dbType, expression,
             instanceId, chartType, unit, thresholdWarn, thresholdCrit, color, sortOrder, enabled } = req.body;
@@ -131,7 +132,7 @@ router.put('/metrics/:id', async (req, res) => {
 });
 
 // DELETE /api/custom-metrics/metrics/:id — 删除指标
-router.delete('/metrics/:id', async (req, res) => {
+router.delete('/metrics/:id', adminDbaOps, async (req, res) => {
   try {
     await db.execute(`DELETE FROM MONITOR_CUSTOM_METRIC WHERE METRIC_ID = :1`, [req.params.id]);
     res.json({ code: 200, msg: '删除成功' });

@@ -207,14 +207,15 @@ router.post('/orders', async (req, res) => {
     if (!cat.rows.length) return res.json({ code: 400, msg: '服务类型不存在' });
 
     const initialStatus = cat.rows[0].NEED_APPROVAL ? 'OPEN' : 'IN_PROGRESS';
+    const oracledb = require('oracledb');
     const r = await db.execute(
       `INSERT INTO OPS_SERVICE_ORDER (CATALOG_ID, INSTANCE_ID, TITLE, STATUS, PRIORITY, REMARK, CREATED_BY, ALERT_ID)
-       VALUES (:1, :2, :3, :4, :5, :6, :7, :8)`,
-      [catalogId, instanceId || null, title, initialStatus, priority || 'MEDIUM', remark || null, req.user.userId, alertId || null]
+       VALUES (:1, :2, :3, :4, :5, :6, :7, :8)
+       RETURNING ORDER_ID INTO :9`,
+      [catalogId, instanceId || null, title, initialStatus, priority || 'MEDIUM', remark || null, req.user.userId, alertId || null,
+       { dir: oracledb.BIND_OUT, type: oracledb.NUMBER }]
     );
-    // 获取自增ID
-    const idR = await db.execute(`SELECT MAX(ORDER_ID) AS ID FROM OPS_SERVICE_ORDER WHERE CREATED_BY=:1`, [req.user.userId]);
-    const orderId = idR.rows[0]?.ID;
+    const orderId = r.outBinds?.[0];
 
     // 自动添加创建记录
     if (orderId) {

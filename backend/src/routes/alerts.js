@@ -4,6 +4,7 @@ const { authMiddleware, requireRole } = require('../middleware/auth');
 
 router.use(authMiddleware);
 const adminDba = requireRole('ADMIN', 'DBA');
+const adminDbaOps = requireRole('ADMIN', 'DBA', 'OPS');
 
 // GET /api/alerts  告警列表
 router.get('/', async (req, res) => {
@@ -34,7 +35,7 @@ router.get('/stats', async (req, res) => {
 });
 
 // POST /api/alerts/:id/ack  确认告警
-router.post('/:id/ack', async (req, res) => {
+router.post('/:id/ack', adminDbaOps, async (req, res) => {
   try {
     const check = await db.execute(`SELECT STATUS FROM ALERT_RECORD WHERE ALERT_ID=:1`, [req.params.id]);
     if (!check.rows.length) return res.json({ code:404, msg:'告警不存在' });
@@ -56,7 +57,7 @@ router.get('/rules', async (req, res) => {
 });
 
 // POST /api/alerts/rules  创建告警规则
-router.post('/rules', async (req, res) => {
+router.post('/rules', adminDba, async (req, res) => {
   const { ruleName,ruleType,metric,operator,threshold,duration,severity,dbType,instanceId,promql,notifyChan,notifyTo } = req.body;
   if (!ruleName || !metric) return res.json({ code:400, msg:'规则名称和监控指标不能为空' });
   if (operator && !['gt','lt','gte','lte'].includes(operator)) return res.json({ code:400, msg:'运算符无效' });
@@ -72,7 +73,7 @@ router.post('/rules', async (req, res) => {
 });
 
 // DELETE /api/alerts/rules/:id
-router.delete('/rules/:id', async (req, res) => {
+router.delete('/rules/:id', adminDba, async (req, res) => {
   try {
     const r = await db.execute(`DELETE FROM ALERT_RULE WHERE RULE_ID=:1`, [req.params.id]);
     if (r.rowsAffected === 0) return res.json({ code:404, msg:'规则不存在' });
@@ -81,7 +82,7 @@ router.delete('/rules/:id', async (req, res) => {
 });
 
 // PUT /api/alerts/rules/:id
-router.put('/rules/:id', async (req, res) => {
+router.put('/rules/:id', adminDba, async (req, res) => {
   const { ruleName,operator,threshold,duration,severity,enabled,notifyChan,notifyTo } = req.body;
   try {
     await db.execute(
@@ -106,7 +107,7 @@ router.get('/suppression-rules', async (req, res) => {
 });
 
 // POST /api/alerts/suppression-rules
-router.post('/suppression-rules', async (req, res) => {
+router.post('/suppression-rules', adminDba, async (req, res) => {
   try {
     const { ruleName, ruleType, description, parentLevels, childLevels, suppressWindow, autoRelease } = req.body;
     if (!ruleName || !ruleType) return res.json({ code: 400, msg: '规则名称和类型不能为空' });
@@ -119,7 +120,7 @@ router.post('/suppression-rules', async (req, res) => {
 });
 
 // PUT /api/alerts/suppression-rules/:id
-router.put('/suppression-rules/:id', async (req, res) => {
+router.put('/suppression-rules/:id', adminDba, async (req, res) => {
   try {
     const { ruleName, description, parentLevels, childLevels, suppressWindow, autoRelease, enabled } = req.body;
     await db.execute(
@@ -372,7 +373,7 @@ router.get('/:id/suppressing', async (req, res) => {
 });
 
 // POST /api/alerts/:id/unsuppress — 手动解除抑制
-router.post('/:id/unsuppress', async (req, res) => {
+router.post('/:id/unsuppress', adminDba, async (req, res) => {
   try {
     const check = await db.execute(
       `SELECT STATUS, SUPPRESSED_BY_ID FROM ALERT_RECORD WHERE ALERT_ID = :1`, [req.params.id]);
@@ -424,7 +425,7 @@ router.get('/suppression-stats', async (req, res) => {
 });
 
 // 修改 POST /api/alerts/:id/resolve — 解决告警时自动解除被抑制的子告警
-router.post('/:id/resolve', async (req, res) => {
+router.post('/:id/resolve', adminDbaOps, async (req, res) => {
   try {
     const check = await db.execute(`SELECT STATUS FROM ALERT_RECORD WHERE ALERT_ID=:1`, [req.params.id]);
     if (!check.rows.length) return res.json({ code:404, msg:'告警不存在' });
@@ -699,7 +700,7 @@ async function splitAggregation(aggId) {
 }
 
 // POST /api/alerts/aggregate — 执行告警聚合去重
-router.post('/aggregate', async (req, res) => {
+router.post('/aggregate', adminDbaOps, async (req, res) => {
   try {
     const windowMinutes = Number(req.body?.windowMinutes) || 10;
     const result = await aggregateAlerts(windowMinutes);
@@ -782,7 +783,7 @@ router.get('/aggregation-groups/:id', async (req, res) => {
 });
 
 // POST /api/alerts/aggregation-groups/:id/resolve — 解决聚合组所有告警
-router.post('/aggregation-groups/:id/resolve', async (req, res) => {
+router.post('/aggregation-groups/:id/resolve', adminDbaOps, async (req, res) => {
   try {
     const aggRes = await db.execute(
       `SELECT ALERT_IDS FROM ALERT_AGGREGATION WHERE AGG_ID = :1`, [req.params.id]);
@@ -803,7 +804,7 @@ router.post('/aggregation-groups/:id/resolve', async (req, res) => {
 });
 
 // POST /api/alerts/aggregation-groups/:id/split — 解散聚合组
-router.post('/aggregation-groups/:id/split', async (req, res) => {
+router.post('/aggregation-groups/:id/split', adminDba, async (req, res) => {
   try {
     await splitAggregation(req.params.id);
     res.json({ code: 200, msg: '聚合组已解散' });
@@ -955,7 +956,7 @@ router.get('/silence-rules', async (req, res) => {
 });
 
 // POST /api/alerts/silence-rules — 创建静默规则
-router.post('/silence-rules', async (req, res) => {
+router.post('/silence-rules', adminDba, async (req, res) => {
   try {
     const { ruleName, description, instanceId, severity, ruleNameMatch,
             silenceType, startTime, endTime, cronExpr, durationMin, timezone } = req.body;
@@ -982,7 +983,7 @@ router.post('/silence-rules', async (req, res) => {
 });
 
 // PUT /api/alerts/silence-rules/:id — 更新静默规则
-router.put('/silence-rules/:id', async (req, res) => {
+router.put('/silence-rules/:id', adminDba, async (req, res) => {
   try {
     const { ruleName, description, instanceId, severity, ruleNameMatch,
             silenceType, startTime, endTime, cronExpr, durationMin, timezone, enabled } = req.body;
@@ -1050,7 +1051,7 @@ router.post('/batch-check-silence', async (req, res) => {
 });
 
 // POST /api/alerts/:id/unsilence — 手动解除静默
-router.post('/:id/unsilence', async (req, res) => {
+router.post('/:id/unsilence', adminDba, async (req, res) => {
   try {
     const check = await db.execute(
       `SELECT STATUS, SILENCE_RULE_ID FROM ALERT_RECORD WHERE ALERT_ID = :1`, [req.params.id]);

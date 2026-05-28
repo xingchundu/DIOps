@@ -52,7 +52,7 @@ router.post('/login', async (req, res) => {
       await db.execute(
         `INSERT INTO SYS_AUDIT_LOG (USER_ID, USERNAME, ACTION, IP_ADDR, STATUS, DETAIL) VALUES (:1,:2,:3,:4,:5,:6)`,
         [null, username, 'LOGIN_FAIL', getClientIp(req), 'FAIL', `密码错误`]
-      );
+      ).catch(() => {});
       return res.json({ code: 401, msg: '用户名或密码错误' });
     }
     // 更新最后登录时间

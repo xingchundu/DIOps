@@ -5,12 +5,13 @@
 const router = require('express').Router();
 const oracledb = require('oracledb');
 const db = require('../config/db');
-const { authMiddleware } = require('../middleware/auth');
+const { authMiddleware, requireRole } = require('../middleware/auth');
 const {
   fetchCmdbInstance, connectOracle, connectMysql, connectPostgres, connectDameng, normalizeDbType,
 } = require('../utils/monitorTargetConn');
 
 router.use(authMiddleware);
+const adminDbaOps = requireRole('ADMIN', 'DBA', 'OPS');
 
 // ─── 安全限制 ──────────────────────────────────────────────────
 const MAX_ROWS = 500;           // 最大返回行数
@@ -248,7 +249,7 @@ async function getTableColumns(instanceId, owner, tableName) {
 // ─── API 端点 ──────────────────────────────────────────────────
 
 // POST /api/workbench/execute — 执行 SQL
-router.post('/execute', async (req, res) => {
+router.post('/execute', adminDbaOps, async (req, res) => {
   try {
     const { instanceId, sql, allowDangerous } = req.body;
     if (!instanceId || !sql) return res.json({ code: 400, msg: '实例和SQL必填' });
@@ -321,8 +322,14 @@ router.get('/history', async (req, res) => {
 // POST /api/workbench/explain — 执行 EXPLAIN
 router.post('/explain', async (req, res) => {
   try {
-    const { instanceId, sql } = req.body;
+    const { instanceId, sql, allowDangerous } = req.body;
     if (!instanceId || !sql) return res.json({ code: 400, msg: '实例和SQL必填' });
+
+    // 危险操作检查（EXPLAIN 同样需要拦截 DML）
+    if (!allowDangerous) {
+      const danger = isDangerous(sql);
+      if (danger) return res.json({ code: 403, msg: `安全拦截: 检测到 ${danger} 操作，请勾选「允许执行」后重试` });
+    }
 
     const inst = await fetchCmdbInstance(instanceId);
     const dbType = normalizeDbType(inst);

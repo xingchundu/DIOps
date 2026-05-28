@@ -403,8 +403,7 @@ async function executeSql() {
   } catch (e) {
     execError.value = e.message
     addMsg(`执行异常: ${e.message}`, 'error')
-  }
-  executing.value = false
+  } finally { executing.value = false }
 }
 
 async function explainSql() {
@@ -417,6 +416,7 @@ async function explainSql() {
     const r = await workbenchApi.explain({
       instanceId: selectedInstance.value,
       sql: sqlText.value.trim(),
+      allowDangerous: allowDangerous.value,
     })
     if (r.code === 200) {
       planResult.value = r.data
@@ -427,8 +427,7 @@ async function explainSql() {
     }
   } catch (e) {
     addMsg(`执行计划异常: ${e.message}`, 'error')
-  }
-  explaining.value = false
+  } finally { explaining.value = false }
 }
 
 async function loadHistory() {

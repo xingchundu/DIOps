@@ -356,7 +356,7 @@ function statusType(s) { return { OPEN: 'danger', IN_PROGRESS: 'warning', PENDIN
 function statusLabel(s) { return { OPEN: '待处理', IN_PROGRESS: '处理中', PENDING_REVIEW: '待审核', RESOLVED: '已解决', CLOSED: '已关闭', REJECTED: '已拒绝' }[s] || s }
 function priorityType(p) { return { CRITICAL: 'danger', HIGH: 'warning', MEDIUM: '', LOW: 'info' }[p] || 'info' }
 function priorityLabel(p) { return { CRITICAL: '紧急', HIGH: '高', MEDIUM: '中', LOW: '低' }[p] || p }
-function statusActionLabel(s) { return { IN_PROGRESS: '开始处理', PENDING_REVIEW: '提交审核', RESOLVED: '标记解决', CLOSED: '关闭工单', REJECTED: '拒绝工单', IN_PROGRESS: '重新打开' }[s] || s }
+function statusActionLabel(s) { return { OPEN: '开始处理', IN_PROGRESS: '提交审核', PENDING_REVIEW: '标记解决', RESOLVED: '关闭工单', CLOSED: '重新打开', REJECTED: '重新打开' }[s] || s }
 
 const allowedTransitions = computed(() => {
   if (!detail.value) return []

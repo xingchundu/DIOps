@@ -666,8 +666,8 @@ async function loadWaits() {
     const r = await monitorApi.waits(id.value)
     allWaits.value = r.data || []
     await nextTick(); initWaitCharts()
-  } catch { allWaits.value = [] }
-  waitsLoading.value = false
+  } catch (e) { allWaits.value = []; ElMessage.error(e?.message || '加载等待事件失败') }
+  finally { waitsLoading.value = false }
 }
 
 async function loadLocks() {
@@ -675,8 +675,8 @@ async function loadLocks() {
   try {
     const r = await monitorApi.locks(id.value)
     locks.value = r.data || []
-  } catch { locks.value = [] }
-  locksLoading.value = false
+  } catch (e) { locks.value = []; ElMessage.error(e?.message || '加载锁信息失败') }
+  finally { locksLoading.value = false }
 }
 
 function fmtTrendAxis(iso) {

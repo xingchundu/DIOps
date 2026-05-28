@@ -142,7 +142,7 @@
 </template>
 
 <script setup>
-import { ref, reactive, computed, onMounted, nextTick, watch } from 'vue'
+import { ref, reactive, computed, onMounted, onUnmounted, nextTick, watch } from 'vue'
 import { useAuthStore } from '@/stores/auth.js'
 import { cmdbApi } from '@/api/index.js'
 import { ElMessage } from 'element-plus'
@@ -358,7 +358,8 @@ async function addMember() {
       await onClusterSelect(currentCluster.value)
       await loadClusters()
     } else { ElMessage.error(r.msg || '添加失败') }
-  } finally { saving.value = false }
+  } catch (e) { ElMessage.error(e?.message || '添加失败') }
+  finally { saving.value = false }
 }
 
 async function removeMember(instanceId) {
@@ -374,9 +375,14 @@ async function removeMember(instanceId) {
 
 onMounted(async () => {
   await Promise.all([loadClusters(), loadInstances()])
+  window.addEventListener('resize', resizeHandler)
+})
+
+onUnmounted(() => {
+  window.removeEventListener('resize', resizeHandler)
+  if (topoChart) { topoChart.dispose(); topoChart = null }
 })
 
 // 窗口缩放时重绘拓扑图
 const resizeHandler = () => { if (topoChart) topoChart.resize() }
-window.addEventListener('resize', resizeHandler)
 </script>

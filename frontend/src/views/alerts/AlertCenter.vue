@@ -673,8 +673,7 @@ async function resolve(row) {
 function viewAlert(row) {
   current.value = row; detailVisible.value = true
   suppressedByInfo.value = []; suppressingInfo.value = []
-  if (row.STATUS === 'SUPPRESSED' || row.SUPPRESSED_BY_ID) loadSuppressionInfo(row.ALERT_ID)
-  if (row.STATUS !== 'SUPPRESSED') loadSuppressionInfo(row.ALERT_ID)
+  loadSuppressionInfo(row.ALERT_ID)
 }
 
 async function toggleRule(row) {

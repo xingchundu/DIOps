@@ -75,17 +75,15 @@ router.post('/tickets', async (req, res) => {
     const hash = sqlHash(sqlText);
 
     // 创建工单
+    const oracledb = require('oracledb');
     const result = await db.execute(
       `INSERT INTO SQL_REVIEW_TICKET (TITLE, SQL_TEXT, SQL_HASH, INSTANCE_ID, DB_TYPE, ENVIRONMENT, SOURCE, PRIORITY, SUBMITTED_BY, ASSIGNED_TO)
-       VALUES (:1, :2, :3, :4, :5, :6, :7, :8, :9, :10)`,
+       VALUES (:1, :2, :3, :4, :5, :6, :7, :8, :9, :10)
+       RETURNING TICKET_ID INTO :11`,
       [title, sqlText, hash, instanceId || null, dbType || null, environment || 'DEV',
-       source || 'ONLINE', priority || 'NORMAL', req.user.userId, assignedTo || null]);
-
-    // 获取新建工单 ID
-    const idRes = await db.execute(
-      `SELECT MAX(TICKET_ID) AS ID FROM SQL_REVIEW_TICKET WHERE SUBMITTED_BY = :1 AND SQL_HASH = :2`,
-      [req.user.userId, hash]);
-    const ticketId = idRes.rows[0]?.ID;
+       source || 'ONLINE', priority || 'NORMAL', req.user.userId, assignedTo || null,
+       { dir: oracledb.BIND_OUT, type: oracledb.NUMBER }]);
+    const ticketId = result.outBinds?.[0];
 
     // 插入系统评论
     if (ticketId) {
@@ -109,10 +107,6 @@ router.post('/tickets/:id/auto-audit', async (req, res) => {
     const ticket = ticketRes.rows[0];
     if (ticket.STATUS === 'APPROVED' || ticket.STATUS === 'REJECTED')
       return res.json({ code: 400, msg: '该工单已审核完毕' });
-
-    // 调用已有审核逻辑
-    const http = require('http');
-    const aiAgentUrl = process.env.AI_OPS_AGENT_URL || 'http://127.0.0.1:8001';
 
     // 使用内部审核逻辑
     const auditResult = await runInternalAudit(ticket.SQL_TEXT, ticket.INSTANCE_ID);

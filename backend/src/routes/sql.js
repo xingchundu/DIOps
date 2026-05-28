@@ -29,9 +29,22 @@ router.get('/slow', async (req, res) => {
 });
 
 // POST /api/sql/explain  执行计划分析
+const DANGEROUS_KEYWORDS = ['DROP', 'TRUNCATE', 'DELETE', 'ALTER', 'CREATE', 'GRANT', 'REVOKE', 'INSERT', 'UPDATE'];
+function isDangerous(sql) {
+  const upper = sql.trim().toUpperCase();
+  for (const kw of DANGEROUS_KEYWORDS) {
+    if (new RegExp(`(^|;\\s*)${kw}\\b`).test(upper)) return kw;
+  }
+  return null;
+}
+
 router.post('/explain', async (req, res) => {
-  const { instanceId, sqlText } = req.body;
+  const { instanceId, sqlText, allowDangerous } = req.body;
   if (!instanceId || !sqlText) return res.json({code:400,msg:'instanceId和sqlText不能为空'});
+  if (!allowDangerous) {
+    const danger = isDangerous(sqlText);
+    if (danger) return res.json({ code: 403, msg: `安全拦截: 检测到 ${danger} 操作，请勾选「允许执行」后重试` });
+  }
   let conn;
   try {
     conn = await getInstConn(instanceId);

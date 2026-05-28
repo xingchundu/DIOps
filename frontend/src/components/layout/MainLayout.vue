@@ -84,7 +84,7 @@
       </el-menu>
       <!-- 侧边栏底部版本信息 -->
       <div v-if="!collapsed" class="sidebar-footer">
-        <span>DB智能平台 v1.1</span>
+        <span>DB智能平台 v3.22</span>
       </div>
     </aside>
 

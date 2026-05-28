@@ -101,7 +101,8 @@ onMounted(async () => {
 })
 
 async function loadOverview() {
-  try { const r = await monitorApi.overview(); stats.value = r.data } catch {}
+  try { const r = await monitorApi.overview(); stats.value = r.data }
+  catch (e) { console.error('加载概览失败:', e?.message) }
 }
 
 let alertTrend = []

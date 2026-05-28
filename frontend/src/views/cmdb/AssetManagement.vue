@@ -397,10 +397,6 @@ async function save() {
       res?.msg ||
       (formData.INSTANCE_ID ? '保存成功，实例信息已更新。' : '保存成功，新实例已添加。')
     ElMessage.success(msg)
-    await ElMessageBox.alert(msg, '操作成功', {
-      type: 'success',
-      confirmButtonText: '确定',
-    })
     formVisible.value = false
     await refreshAll()
   } catch (e) {

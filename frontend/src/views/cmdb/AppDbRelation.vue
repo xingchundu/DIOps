@@ -356,15 +356,17 @@ async function loadRelations() {
 }
 
 async function openRelDialog() {
-  relDialogVisible.value = true
   Object.assign(relForm, { appId: null, instanceId: null, relationType: 'DEPENDS_ON', dependency: 'STRONG', description: '' })
-  // Load all apps and instances for selectors
-  const [ar, ir] = await Promise.all([
-    appRelationApi.apps({ size: 999 }),
-    cmdbApi.list({ size: 999 }),
-  ])
-  allApps.value = ar.data?.list || []
-  allInstances.value = ir.data?.list || []
+  // Load all apps and instances for selectors before opening dialog
+  try {
+    const [ar, ir] = await Promise.all([
+      appRelationApi.apps({ size: 999 }),
+      cmdbApi.list({ size: 999 }),
+    ])
+    allApps.value = ar.data?.list || []
+    allInstances.value = ir.data?.list || []
+    relDialogVisible.value = true
+  } catch (e) { ElMessage.error(e?.message || '加载数据失败') }
 }
 
 async function saveRelation() {

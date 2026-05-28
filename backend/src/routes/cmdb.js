@@ -141,7 +141,7 @@ router.get('/instances/:id', async (req, res) => {
 });
 
 // POST /api/cmdb/instances
-router.post('/instances', async (req, res) => {
+router.post('/instances', adminDba, async (req, res) => {
   const { instanceName, dbType, dbVersion, hostIp, port, sid, serviceName, dbUser, dbPassword,
           charset, environment, bizLine, tags, role, clusterName, hostId } = req.body;
   if (!instanceName || !dbType || !hostIp) {
@@ -194,7 +194,7 @@ router.post('/instances', async (req, res) => {
 });
 
 // PUT /api/cmdb/instances/:id
-router.put('/instances/:id', async (req, res) => {
+router.put('/instances/:id', adminDba, async (req, res) => {
   const {
     instanceName,
     dbType,

@@ -349,7 +349,7 @@ async function loadUsers() {
 }
 
 async function submitCreate() {
-  await createFormRef.value.validate()
+  try { await createFormRef.value.validate() } catch { return }
   createLoading.value = true
   try {
     const res = await sqlReviewApi.createTicket(createForm)

@@ -91,6 +91,8 @@ router.get('/jobs', async (req, res) => {
     const total = countR.rows[0]?.CNT || 0;
 
     const offset = (Number(page) - 1) * Number(pageSize);
+    const fetchIdx = idx++;
+    const offsetIdx = idx++;
     binds.push(Number(pageSize)); binds.push(offset);
     const r = await db.execute(
       `SELECT j.JOB_ID, j.TEMPLATE_ID, j.INSTANCE_ID, j.HOST_ID, j.TARGET_IP, j.STATUS,
@@ -103,7 +105,7 @@ router.get('/jobs', async (req, res) => {
        LEFT JOIN SYS_USER u ON j.CREATED_BY = u.USER_ID
        WHERE ${where}
        ORDER BY j.CREATED_AT DESC
-       OFFSET :${idx++} ROWS FETCH NEXT :${idx - 2} ROWS ONLY`, binds
+       OFFSET :${offsetIdx} ROWS FETCH NEXT :${fetchIdx} ROWS ONLY`, binds
     );
     res.json({ code: 200, data: { list: r.rows, total } });
   } catch (e) { res.json({ code: 500, msg: e.message }); }
