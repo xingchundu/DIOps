@@ -126,7 +126,7 @@
         </div>
       </header>
       <main class="main-content">
-        <router-view />
+        <router-view :key="route.path" />
       </main>
     </div>
 
@@ -326,5 +326,5 @@ onUnmounted(() => { if (alertTimer) { clearInterval(alertTimer); alertTimer = nu
   font-weight: 500;
 }
 
-.main-content { flex: 1; overflow-y: auto; background: var(--app-page-bg); }
+.main-content { flex: 1; min-height: 0; overflow-y: auto; background: var(--app-page-bg); position: relative; }
 </style>

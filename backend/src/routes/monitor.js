@@ -274,9 +274,9 @@ router.get('/instances/:id/locks', async (req, res) => {
     }
     const rows = await withOracleConn(req.params.id, async (conn) => {
       const r = await conn.execute(
-        `SELECT HOLDER.SID HOLDER_SID, HOLDER.SERIAL# HOLDER_SERIAL,
+        `SELECT HOLDER.SID HOLDER_SID, HS.SERIAL# HOLDER_SERIAL,
                 HS.USERNAME HOLDER_USER, HS.PROGRAM HOLDER_PROG,
-                WAITER.SID WAITER_SID, WAITER.SERIAL# WAITER_SERIAL,
+                WAITER.SID WAITER_SID, WS.SERIAL# WAITER_SERIAL,
                 WS.USERNAME WAITER_USER, WS.PROGRAM WAITER_PROG,
                 ROUND(WS.LAST_CALL_ET/60,1) WAIT_MIN,
                 WS.EVENT WAIT_EVENT

@@ -120,6 +120,7 @@
 import { ref, reactive, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { monitorApi } from '@/api/index.js'
+import { ElMessage } from 'element-plus'
 
 const router  = useRouter()
 const loading = ref(false)
@@ -146,13 +147,16 @@ async function load() {
   loading.value = true
   try {
     const res = await monitorApi.instances()
+    if (res.code !== 200) { ElMessage.error(res.msg || '加载失败'); return }
     let data = res.data || []
     if (q.keyword) data = data.filter(r => r.INSTANCE_NAME?.includes(q.keyword) || r.HOST_IP?.includes(q.keyword))
     if (q.status)  data = data.filter(r => r.STATUS === q.status)
     if (q.dbType)  data = data.filter(r => r.DB_TYPE === q.dbType)
     if (q.env)     data = data.filter(r => r.ENVIRONMENT === q.env)
     list.value = data
-  } finally { loading.value = false }
+    ElMessage.success(`已刷新，共 ${data.length} 个实例`)
+  } catch (e) { ElMessage.error(e?.message || '加载失败') }
+  finally { loading.value = false }
 }
 
 function goDetail(id) { router.push(`/monitor/${id}`) }

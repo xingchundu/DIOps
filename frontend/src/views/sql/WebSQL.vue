@@ -147,7 +147,8 @@
 </template>
 
 <script setup>
-import { ref, onMounted, onUnmounted, watch, nextTick } from 'vue'
+import { ref, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
+import { onBeforeRouteLeave } from 'vue-router'
 import { workbenchApi } from '@/api/index.js'
 import { ElMessage } from 'element-plus'
 
@@ -155,7 +156,7 @@ import { ElMessage } from 'element-plus'
 import { EditorView, keymap, lineNumbers, highlightActiveLine, highlightSpecialChars, drawSelection, dropCursor, rectangularSelection, highlightActiveLineGutter } from '@codemirror/view'
 import { EditorState, Compartment } from '@codemirror/state'
 import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirror/commands'
-import { sql, SQLite, MySQL, PostgreSQL, PLSQL, MSSQL } from '@codemirror/lang-sql'
+import { sql, SQLite, MySQL, PostgreSQL, PLSQL, MSSQL, StandardSQL } from '@codemirror/lang-sql'
 import { oneDark } from '@codemirror/theme-one-dark'
 import { foldGutter, indentOnInput, syntaxHighlighting, defaultHighlightStyle, bracketMatching, foldKeymap } from '@codemirror/language'
 import { closeBrackets, closeBracketsKeymap, autocompletion, completionKeymap } from '@codemirror/autocomplete'
@@ -219,11 +220,18 @@ function addMsg(text, type = 'info') {
 function fmtTime(v) { return v ? new Date(v).toLocaleString('zh-CN') : '-' }
 
 function getDialect(dbType) {
-  return dialectMap[dbType?.toUpperCase()] || SQL
+  return dialectMap[dbType?.toUpperCase()] || StandardSQL
+}
+
+function destroyEditor() {
+  if (editorView) {
+    editorView.destroy()
+    editorView = null
+  }
 }
 
 function createEditor(extensions = []) {
-  if (editorView) editorView.destroy()
+  destroyEditor()
   const baseTheme = EditorView.theme({
     '&': { height: '100%', fontSize: '13px' },
     '.cm-scroller': { fontFamily: "'Cascadia Code', 'Fira Code', 'Consolas', 'Monaco', monospace" },
@@ -262,7 +270,7 @@ function createEditor(extensions = []) {
         { key: 'Ctrl-Enter', run: () => { executeSql(); return true } },
         { key: 'Cmd-Enter', run: () => { executeSql(); return true } },
       ]),
-      languageConf.of(sql({ dialect: SQL, schema: buildSchemaSource(), upperCaseKeywords: true })),
+      languageConf.of(sql({ dialect: StandardSQL, schema: buildSchemaSource(), upperCaseKeywords: true })),
       oneDark,
       baseTheme,
       EditorView.updateListener.of(update => {
@@ -458,12 +466,24 @@ function clearEditor() {
   planResult.value = null
 }
 
-onMounted(() => { loadInstances(); createEditor() })
-onUnmounted(() => { if (editorView) editorView.destroy() })
+onMounted(async () => {
+  await loadInstances()
+  await nextTick()
+  createEditor()
+})
+onBeforeUnmount(() => destroyEditor())
+onBeforeRouteLeave(() => { destroyEditor() })
 </script>
 
 <style scoped>
-.workbench-wrap { display: flex; flex-direction: column; height: calc(100vh - 56px); overflow: hidden; }
+.workbench-wrap {
+  display: flex;
+  flex-direction: column;
+  height: calc(100vh - var(--header-height));
+  max-height: calc(100vh - var(--header-height));
+  overflow: hidden;
+  box-sizing: border-box;
+}
 
 .wb-toolbar {
   display: flex; justify-content: space-between; align-items: center;
