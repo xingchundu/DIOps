@@ -559,7 +559,7 @@ function renderGauges() {
         data: [{ value: val }],
         itemStyle: { color: valueColor(r) },
       }],
-    })
+    }, true)
   })
 }
 
@@ -635,6 +635,7 @@ onMounted(() => {
 }
 .gauge-value, .number-value, .value-main {
   font-size: 32px; font-weight: 700; text-align: center;
+  line-height: 1.2; min-height: 40px; display: flex; align-items: center; justify-content: center;
 }
 .number-unit, .value-unit { font-size: 14px; font-weight: 400; color: var(--el-text-color-secondary); }
 .value-samples { text-align: center; font-size: 12px; color: var(--el-text-color-secondary); margin-top: 4px; }
