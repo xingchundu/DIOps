@@ -79,6 +79,11 @@ async function evaluateExpression(instanceId, expression, hours = 24) {
  * @returns {Promise<{value: any, columns: string[], rows: any[]}>}
  */
 async function executeCustomSql(instanceId, sqlText) {
+  // CLOB columns may return as Lob objects; ensure we have a plain string
+  if (sqlText && typeof sqlText !== 'string') {
+    sqlText = typeof sqlText.getData === 'function' ? await sqlText.getData() : String(sqlText);
+  }
+  if (!sqlText || !sqlText.trim()) throw new Error('SQL 语句不能为空');
   const inst = await fetchCmdbInstance(instanceId);
   const dbType = normalizeDbType(inst);
   let conn;

@@ -173,7 +173,9 @@ async function load() {
   try {
     const r = await cmdbApi.hosts(q)
     if (r.code === 200) list.value = r.data || []
-  } finally { loading.value = false }
+    else ElMessage.error(r.msg || '加载失败')
+  } catch (e) { ElMessage.error(e?.message || '加载失败') }
+  finally { loading.value = false }
 }
 
 function openForm(row = null) {

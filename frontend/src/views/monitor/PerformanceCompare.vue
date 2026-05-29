@@ -187,7 +187,7 @@ const chartDefs = [
 async function loadInstances() {
   try {
     const res = await cmdbApi.list({ size: 999 })
-    instances.value = (res.data?.rows || res.data || []).filter(i => i.STATUS === 'RUNNING')
+    instances.value = (res.data?.list || []).filter(i => i.STATUS === 'RUNNING')
   } catch {}
 }
 

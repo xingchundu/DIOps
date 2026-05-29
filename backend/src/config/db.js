@@ -9,6 +9,7 @@ require('dotenv').config();
 
 oracledb.outFormat = oracledb.OUT_FORMAT_OBJECT;
 oracledb.autoCommit = true;
+oracledb.fetchAsString = [oracledb.CLOB];
 
 let pool;
 

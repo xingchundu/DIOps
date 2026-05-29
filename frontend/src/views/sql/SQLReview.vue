@@ -317,7 +317,7 @@ async function loadTickets() {
   loading.value = true
   try {
     const res = await sqlReviewApi.tickets({ ...filters, page: page.value, size: pageSize.value })
-    tickets.value = res.data?.rows || res.data || []
+    tickets.value = res.data?.list || []
     total.value = res.data?.total || tickets.value.length
   } catch { /* handled by interceptor */ }
   loading.value = false
@@ -342,10 +342,10 @@ const instances = ref([])
 const users = ref([])
 
 async function loadInstances() {
-  try { const res = await cmdbApi.list({ size: 999 }); instances.value = res.data?.rows || res.data || [] } catch {}
+  try { const res = await cmdbApi.list({ size: 999 }); instances.value = res.data?.list || [] } catch {}
 }
 async function loadUsers() {
-  try { const res = await userApi.list({ size: 999 }); users.value = res.data?.rows || res.data || [] } catch {}
+  try { const res = await userApi.list({ size: 999 }); users.value = res.data?.list || [] } catch {}
 }
 
 async function submitCreate() {

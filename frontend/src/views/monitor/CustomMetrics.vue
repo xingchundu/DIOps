@@ -118,6 +118,10 @@
                 <div v-if="r.chartType === 'gauge'" class="metric-gauge-card">
                   <div class="gauge-label">{{ r.metricLabel }}</div>
                   <div ref="gaugeRefs" :data-idx="idx" style="height:180px" />
+                  <div class="gauge-value" :style="{ color: valueColor(r) }">
+                    {{ r.value != null ? r.value : '--' }}
+                    <span v-if="r.unit" class="number-unit">{{ r.unit }}</span>
+                  </div>
                   <div v-if="r.error" class="metric-error">{{ r.error }}</div>
                 </div>
                 <!-- number 数字展示 -->
@@ -541,6 +545,8 @@ function renderGauges() {
       backgroundColor: 'transparent',
       series: [{
         type: 'gauge',
+        center: ['50%', '50%'],
+        radius: '90%',
         min: 0, max: Math.max(max * 1.2, val * 1.2, 100),
         progress: { show: true, width: 14 },
         axisLine: { lineStyle: { width: 14 } },
@@ -548,11 +554,7 @@ function renderGauges() {
         splitLine: { length: 8, lineStyle: { width: 2, color: '#999' } },
         axisLabel: { distance: 20, fontSize: 11 },
         pointer: { itemStyle: { color: 'auto' } },
-        detail: {
-          valueAnimation: true, fontSize: 22, fontWeight: 'bold',
-          formatter: v => r.unit ? `${v} ${r.unit}` : String(v),
-          color: valueColor(r),
-        },
+        detail: { show: false },
         title: { show: false },
         data: [{ value: val }],
         itemStyle: { color: valueColor(r) },
@@ -631,7 +633,7 @@ onMounted(() => {
 .gauge-label, .number-label, .value-label, .table-label {
   font-size: 13px; color: var(--el-text-color-secondary); margin-bottom: 8px; text-align: center;
 }
-.number-value, .value-main {
+.gauge-value, .number-value, .value-main {
   font-size: 32px; font-weight: 700; text-align: center;
 }
 .number-unit, .value-unit { font-size: 14px; font-weight: 400; color: var(--el-text-color-secondary); }
