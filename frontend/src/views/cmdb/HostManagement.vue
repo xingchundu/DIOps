@@ -23,6 +23,7 @@
           <el-option v-for="dc in datacenters" :key="dc" :label="dc" :value="dc" />
         </el-select>
         <el-button icon="Refresh" :loading="loading" @click="load">刷新</el-button>
+        <el-button icon="Connection" :loading="checkingAll" @click="checkAll">全量检测</el-button>
         <el-button v-if="canMutate" type="primary" icon="Plus" @click="openForm()">添加主机</el-button>
       </div>
 
@@ -38,20 +39,24 @@
         <el-table-column prop="CPU_CORES" label="CPU核数" width="90" align="center" />
         <el-table-column prop="MEMORY_GB" label="内存(GB)" width="90" align="center" />
         <el-table-column prop="DATACENTER" label="数据中心" width="120" show-overflow-tooltip />
-        <el-table-column label="状态" width="90">
+        <el-table-column label="状态" width="120">
           <template #default="{ row }">
             <el-tag :type="statusType(row.STATUS)" size="small">{{ statusLabel(row.STATUS) }}</el-tag>
+            <span v-if="row._latency != null" style="font-size:11px;color:#909399;margin-left:4px">{{ row._latency }}ms</span>
           </template>
         </el-table-column>
         <el-table-column label="创建时间" width="165" prop="CREATED_AT" :formatter="(r,c,v) => fmt(v)" />
-        <el-table-column v-if="canMutate" label="操作" width="140" fixed="right">
+        <el-table-column label="操作" :width="canMutate ? 200 : 80" fixed="right">
           <template #default="{ row }">
-            <el-button link type="primary" @click="openForm(row)">编辑</el-button>
-            <el-popconfirm title="确定删除该主机吗？" @confirm="del(row.HOST_ID)">
-              <template #reference>
-                <el-button link type="danger">删除</el-button>
-              </template>
-            </el-popconfirm>
+            <el-button link type="success" :loading="row._checking" @click="checkOne(row)">检测</el-button>
+            <template v-if="canMutate">
+              <el-button link type="primary" @click="openForm(row)">编辑</el-button>
+              <el-popconfirm title="确定删除该主机吗？" @confirm="del(row.HOST_ID)">
+                <template #reference>
+                  <el-button link type="danger">删除</el-button>
+                </template>
+              </el-popconfirm>
+            </template>
           </template>
         </el-table-column>
       </el-table>
@@ -210,6 +215,43 @@ async function del(id) {
     if (r.code === 200) { ElMessage.success(r.msg || '删除成功'); load() }
     else { ElMessage.error(r.msg || '删除失败') }
   } catch (e) { ElMessage.error(e.message || '删除失败') }
+}
+
+const checkingAll = ref(false)
+
+async function checkOne(row) {
+  row._checking = true
+  try {
+    const r = await cmdbApi.checkHost(row.HOST_ID)
+    if (r.code === 200) {
+      const d = r.data
+      row.STATUS = d.newStatus
+      row._latency = d.reachable ? d.latencyMs : null
+      ElMessage.success(`${row.HOSTNAME}: ${d.reachable ? '可达' : '不可达'}${d.port ? ' (port ' + d.port + ')' : ''}`)
+    } else { ElMessage.error(r.msg || '检测失败') }
+  } catch (e) { ElMessage.error(e?.message || '检测失败') }
+  finally { row._checking = false }
+}
+
+async function checkAll() {
+  checkingAll.value = true
+  try {
+    const r = await cmdbApi.checkAllHosts()
+    if (r.code === 200) {
+      const { results, updated } = r.data
+      // 更新列表中的状态和延迟
+      for (const item of results) {
+        const row = list.value.find(h => h.HOST_ID === item.hostId)
+        if (row) {
+          row.STATUS = item.newStatus === 'MAINTENANCE' ? row.STATUS : item.newStatus
+          row._latency = item.reachable ? item.latencyMs : null
+        }
+      }
+      const online = results.filter(r => r.reachable).length
+      ElMessage.success(`检测完成: ${online}/${results.length} 在线，${updated} 个状态已更新`)
+    } else { ElMessage.error(r.msg || '批量检测失败') }
+  } catch (e) { ElMessage.error(e?.message || '批量检测失败') }
+  finally { checkingAll.value = false }
 }
 
 onMounted(() => load())

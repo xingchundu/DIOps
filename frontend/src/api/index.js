@@ -50,6 +50,7 @@ export const cmdbApi = {
   hosts: p => http.get('/cmdb/hosts', { params: p }),
   createHost: d => http.post('/cmdb/hosts', d), updateHost: (id, d) => http.put(`/cmdb/hosts/${id}`, d),
   deleteHost: id => http.delete(`/cmdb/hosts/${id}`),
+  checkHost: id => http.post(`/cmdb/hosts/${id}/check`), checkAllHosts: () => http.post('/cmdb/hosts/check-all'),
   clusters: () => http.get('/cmdb/clusters'), clusterDetail: id => http.get(`/cmdb/clusters/${id}`),
   createCluster: d => http.post('/cmdb/clusters', d), updateCluster: (id, d) => http.put(`/cmdb/clusters/${id}`, d),
   deleteCluster: id => http.delete(`/cmdb/clusters/${id}`),

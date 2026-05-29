@@ -1,4 +1,5 @@
 const router = require('express').Router();
+const net = require('net');
 const multer = require('multer');
 const db = require('../config/db');
 const { authMiddleware, requireRole } = require('../middleware/auth');
@@ -357,6 +358,94 @@ router.delete('/hosts/:id', async (req, res) => {
       [req.user.userId, req.user.username, 'DELETE_HOST', old.rows[0].HOSTNAME, 'SUCCESS']
     );
     res.json({ code: 200, msg: '主机删除成功' });
+  } catch (err) { res.json({ code: 500, msg: err.message }); }
+});
+
+// ─── 主机连通性检测 ──────────────────────────────────────────────
+
+/**
+ * TCP 连通性检测：尝试连接目标 IP 的常用端口
+ * @param {string} ip - 目标 IP
+ * @param {number} timeout - 超时毫秒
+ * @returns {Promise<{reachable: boolean, port: number|null, latencyMs: number}>}
+ */
+function checkHostReachable(ip, timeout = 3000) {
+  // 常见数据库/管理端口
+  const ports = [22, 1521, 3306, 5432, 3389, 80, 443];
+  return new Promise((resolve) => {
+    let resolved = false;
+    const start = Date.now();
+    for (const port of ports) {
+      const sock = new net.Socket();
+      sock.setTimeout(timeout);
+      sock.once('connect', () => {
+        if (!resolved) { resolved = true; sock.destroy(); resolve({ reachable: true, port, latencyMs: Date.now() - start }); }
+      });
+      sock.once('timeout', () => { sock.destroy(); });
+      sock.once('error', () => { sock.destroy(); });
+      sock.connect(port, ip);
+    }
+    // 全部超时后判定不可达
+    setTimeout(() => {
+      if (!resolved) { resolved = true; resolve({ reachable: false, port: null, latencyMs: Date.now() - start }); }
+    }, timeout + 200);
+  });
+}
+
+// POST /api/cmdb/hosts/:id/check  单主机连通性检测
+router.post('/hosts/:id/check', async (req, res) => {
+  try {
+    const r = await db.execute(`SELECT HOST_ID, IP_ADDR, STATUS FROM CMDB_HOST WHERE HOST_ID=:1`, [req.params.id]);
+    if (!r.rows.length) return res.json({ code: 404, msg: '主机不存在' });
+    const host = r.rows[0];
+    if (!host.IP_ADDR) return res.json({ code: 400, msg: '主机IP地址为空' });
+
+    const result = await checkHostReachable(host.IP_ADDR.trim());
+    const newStatus = result.reachable ? 'ONLINE' : 'OFFLINE';
+    const oldStatus = host.STATUS;
+
+    // 状态变化时更新数据库
+    if (oldStatus !== newStatus && oldStatus !== 'MAINTENANCE') {
+      await db.execute(`UPDATE CMDB_HOST SET STATUS=:1, UPDATED_AT=SYSTIMESTAMP WHERE HOST_ID=:2`, [newStatus, req.params.id], { autoCommit: true });
+    }
+
+    res.json({
+      code: 200,
+      data: {
+        hostId: host.HOST_ID, ip: host.IP_ADDR,
+        reachable: result.reachable, port: result.port, latencyMs: result.latencyMs,
+        oldStatus, newStatus: oldStatus === 'MAINTENANCE' ? 'MAINTENANCE' : newStatus,
+      },
+    });
+  } catch (err) { res.json({ code: 500, msg: err.message }); }
+});
+
+// POST /api/cmdb/hosts/check-all  批量检测所有主机
+router.post('/hosts/check-all', async (req, res) => {
+  try {
+    const r = await db.execute(`SELECT HOST_ID, IP_ADDR, STATUS FROM CMDB_HOST WHERE IP_ADDR IS NOT NULL`);
+    const results = [];
+    const updates = [];
+
+    await Promise.all(r.rows.map(async (host) => {
+      const result = await checkHostReachable(host.IP_ADDR.trim());
+      const newStatus = result.reachable ? 'ONLINE' : 'OFFLINE';
+      const oldStatus = host.STATUS;
+      results.push({ hostId: host.HOST_ID, ip: host.IP_ADDR, reachable: result.reachable, port: result.port, latencyMs: result.latencyMs, oldStatus, newStatus });
+
+      // 非维护状态才自动更新
+      if (oldStatus !== newStatus && oldStatus !== 'MAINTENANCE') {
+        updates.push({ hostId: host.HOST_ID, status: newStatus });
+      }
+    }));
+
+    // 批量更新状态
+    for (const u of updates) {
+      await db.execute(`UPDATE CMDB_HOST SET STATUS=:1, UPDATED_AT=SYSTIMESTAMP WHERE HOST_ID=:2`, [u.status, u.hostId]);
+    }
+    if (updates.length) await db.execute(`COMMIT`);
+
+    res.json({ code: 200, data: { results, updated: updates.length } });
   } catch (err) { res.json({ code: 500, msg: err.message }); }
 });
 
