@@ -406,7 +406,7 @@ router.post('/hosts/:id/check', async (req, res) => {
 
     // 状态变化时更新数据库
     if (oldStatus !== newStatus && oldStatus !== 'MAINTENANCE') {
-      await db.execute(`UPDATE CMDB_HOST SET STATUS=:1, UPDATED_AT=SYSTIMESTAMP WHERE HOST_ID=:2`, [newStatus, req.params.id], { autoCommit: true });
+      await db.execute(`UPDATE CMDB_HOST SET STATUS=:1 WHERE HOST_ID=:2`, [newStatus, req.params.id], { autoCommit: true });
     }
 
     res.json({
@@ -441,7 +441,7 @@ router.post('/hosts/check-all', async (req, res) => {
 
     // 批量更新状态
     for (const u of updates) {
-      await db.execute(`UPDATE CMDB_HOST SET STATUS=:1, UPDATED_AT=SYSTIMESTAMP WHERE HOST_ID=:2`, [u.status, u.hostId]);
+      await db.execute(`UPDATE CMDB_HOST SET STATUS=:1 WHERE HOST_ID=:2`, [u.status, u.hostId]);
     }
     if (updates.length) await db.execute(`COMMIT`);
 
