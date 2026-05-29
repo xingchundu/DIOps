@@ -75,7 +75,7 @@ app.use((err, req, res, next) => {
 async function start() {
   try {
     await initPool();
-    app.listen(PORT, '0.0.0.0', () => {
+    app.listen(PORT, '0.0.0.0', async () => {
       // ASCII-only banner: avoids mojibake on Windows cmd/PowerShell (GBK vs UTF-8).
       console.log('\n========================================');
       console.log(' DB Ops backend is running');
