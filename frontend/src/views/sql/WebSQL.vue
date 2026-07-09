@@ -148,16 +148,13 @@
 
 <script setup>
 import { ref, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
-import { onBeforeRouteLeave } from 'vue-router'
 import { workbenchApi } from '@/api/index.js'
-import { ElMessage } from 'element-plus'
 
 // CodeMirror 6 imports
 import { EditorView, keymap, lineNumbers, highlightActiveLine, highlightSpecialChars, drawSelection, dropCursor, rectangularSelection, highlightActiveLineGutter } from '@codemirror/view'
 import { EditorState, Compartment } from '@codemirror/state'
 import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirror/commands'
 import { sql, SQLite, MySQL, PostgreSQL, PLSQL, MSSQL, StandardSQL } from '@codemirror/lang-sql'
-import { oneDark } from '@codemirror/theme-one-dark'
 import { foldGutter, indentOnInput, syntaxHighlighting, defaultHighlightStyle, bracketMatching, foldKeymap } from '@codemirror/language'
 import { closeBrackets, closeBracketsKeymap, autocompletion, completionKeymap } from '@codemirror/autocomplete'
 import { searchKeymap, highlightSelectionMatches } from '@codemirror/search'
@@ -231,12 +228,32 @@ function destroyEditor() {
 }
 
 function createEditor(extensions = []) {
+  if (!editorContainer.value) return
   destroyEditor()
   const baseTheme = EditorView.theme({
-    '&': { height: '100%', fontSize: '13px' },
-    '.cm-scroller': { fontFamily: "'Cascadia Code', 'Fira Code', 'Consolas', 'Monaco', monospace" },
-    '.cm-content': { padding: '8px 0' },
-    '.cm-gutters': { backgroundColor: 'transparent', borderRight: '1px solid var(--el-border-color-lighter)' },
+    '&': {
+      height: '100%',
+      fontSize: '13px',
+      backgroundColor: '#ffffff',
+      color: '#303133',
+    },
+    '.cm-scroller': {
+      fontFamily: "'Cascadia Code', 'Fira Code', 'Consolas', 'Monaco', monospace",
+      overflow: 'auto',
+    },
+    '.cm-content': {
+      padding: '8px 0',
+      caretColor: '#303133',
+      minHeight: '220px',
+    },
+    '.cm-gutters': {
+      backgroundColor: '#f5f7fa',
+      borderRight: '1px solid var(--el-border-color-lighter)',
+      color: '#909399',
+    },
+    '.cm-activeLineGutter': { backgroundColor: '#eef2f7' },
+    '.cm-activeLine': { backgroundColor: '#f5f7fa' },
+    '&.cm-focused': { outline: 'none' },
   })
   const state = EditorState.create({
     doc: sqlText.value,
@@ -249,6 +266,8 @@ function createEditor(extensions = []) {
       drawSelection(),
       dropCursor(),
       EditorState.allowMultipleSelections.of(true),
+      EditorView.editable.of(true),
+      EditorView.lineWrapping,
       indentOnInput(),
       syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
       bracketMatching(),
@@ -271,7 +290,6 @@ function createEditor(extensions = []) {
         { key: 'Cmd-Enter', run: () => { executeSql(); return true } },
       ]),
       languageConf.of(sql({ dialect: StandardSQL, schema: buildSchemaSource(), upperCaseKeywords: true })),
-      oneDark,
       baseTheme,
       EditorView.updateListener.of(update => {
         if (update.docChanged) {
@@ -282,6 +300,7 @@ function createEditor(extensions = []) {
     ],
   })
   editorView = new EditorView({ state, parent: editorContainer.value })
+  editorView.focus()
 }
 
 function buildSchemaSource() {
@@ -466,13 +485,11 @@ function clearEditor() {
   planResult.value = null
 }
 
-onMounted(async () => {
-  await loadInstances()
-  await nextTick()
-  createEditor()
+onMounted(() => {
+  nextTick(() => createEditor())
+  loadInstances()
 })
 onBeforeUnmount(() => destroyEditor())
-onBeforeRouteLeave(() => { destroyEditor() })
 </script>
 
 <style scoped>
@@ -515,20 +532,31 @@ onBeforeRouteLeave(() => { destroyEditor() })
 .wb-center { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
 
 /* CodeMirror 编辑器容器 */
-.wb-editor { flex-shrink: 0; border-bottom: 1px solid var(--el-border-color-lighter); display: flex; flex-direction: column; }
+.wb-editor {
+  flex-shrink: 0;
+  border-bottom: 1px solid var(--el-border-color-lighter);
+  display: flex;
+  flex-direction: column;
+  position: relative;
+  z-index: 2;
+  background: #ffffff;
+}
 .editor-header {
   display: flex; justify-content: space-between; align-items: center;
   padding: 4px 12px; font-size: 12px; color: var(--el-text-color-secondary);
   border-bottom: 1px solid var(--el-border-color-lighter);
 }
 .cm-container {
-  height: 240px; overflow: auto;
+  height: 240px;
+  min-height: 240px;
 }
 .cm-container :deep(.cm-editor) {
   height: 100%;
+  outline: none;
 }
 .cm-container :deep(.cm-scroller) {
   overflow: auto;
+  min-height: 240px;
 }
 
 /* 结果面板 */
