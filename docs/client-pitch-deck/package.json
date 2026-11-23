@@ -1,0 +1,9 @@
+{
+  "name": "client-pitch-deck",
+  "private": true,
+  "description": "One-off script to build customer-facing PPTX for DIOps",
+  "type": "module",
+  "dependencies": {
+    "pptxgenjs": "^3.12.0"
+  }
+}

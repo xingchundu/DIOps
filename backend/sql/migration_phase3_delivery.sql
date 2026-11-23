@@ -1,0 +1,1 @@
+-- 已合并至 migration_platform_ops.sql（dxc 2026-11-12）

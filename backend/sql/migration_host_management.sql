@@ -1,0 +1,21 @@
+-- Migration: Add Host Management menu entry (F-02)
+-- Run this after deploying the Host Management feature
+
+MERGE INTO SYS_MENU t
+USING (SELECT '/cmdb/hosts' AS p FROM DUAL) s ON (t.MENU_PATH = s.p)
+WHEN NOT MATCHED THEN INSERT (MENU_PATH, MENU_NAME, SORT_ORDER) VALUES ('/cmdb/hosts', '主机管理', 55);
+
+-- Grant to ADMIN (full access) and DBA roles
+INSERT INTO SYS_ROLE_MENU (ROLE_ID, MENU_ID)
+SELECT r.ROLE_ID, m.MENU_ID
+FROM SYS_ROLE r, SYS_MENU m
+WHERE r.ROLE_CODE = 'ADMIN' AND m.MENU_PATH = '/cmdb/hosts'
+  AND NOT EXISTS (SELECT 1 FROM SYS_ROLE_MENU rm WHERE rm.ROLE_ID = r.ROLE_ID AND rm.MENU_ID = m.MENU_ID);
+
+INSERT INTO SYS_ROLE_MENU (ROLE_ID, MENU_ID)
+SELECT r.ROLE_ID, m.MENU_ID
+FROM SYS_ROLE r, SYS_MENU m
+WHERE r.ROLE_CODE = 'DBA' AND m.MENU_PATH = '/cmdb/hosts'
+  AND NOT EXISTS (SELECT 1 FROM SYS_ROLE_MENU rm WHERE rm.ROLE_ID = r.ROLE_ID AND rm.MENU_ID = m.MENU_ID);
+
+COMMIT;

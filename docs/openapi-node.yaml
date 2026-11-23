@@ -1,0 +1,26 @@
+openapi: 3.0.3
+info:
+  title: DIOps Node 转发 API（摘要）
+  description: |
+    自动化、报表、AI 等仍由 Node :3001 处理，经网关转发。
+    Java 自有接口请使用 Springdoc `/swagger-ui/index.html`。
+  version: "4.3"
+servers:
+  - url: /api
+paths:
+  /automation/backup/policies:
+    get:
+      summary: 备份策略列表
+      tags: [Automation]
+  /automation/backup/policies/{id}/execute:
+    post:
+      summary: 执行备份策略
+      tags: [Automation]
+  /users/audit:
+    get:
+      summary: 操作审计（Java 接管时同路径）
+      tags: [Users]
+  /ai/chat:
+    post:
+      summary: ChatOps
+      tags: [AI]

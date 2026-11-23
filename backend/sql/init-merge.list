@@ -1,0 +1,8 @@
+# 新库 init.sql 待并入的增量脚本（按顺序执行内容追加）
+# 仅列「全量建库」可安全执行的脚本；upgrade/重命名类见 sql/migrations/
+migration_license.sql
+migration_sql_insight.sql
+migration_platform_ops.sql
+migration_platform_ops_config_labels.sql
+migration_v5_kg_diag.sql
+migration_v6_tablespace_alert.sql

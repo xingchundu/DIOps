@@ -1,0 +1,93 @@
+# 所有取值优先读环境变量；启动时 EnvFileLoader 会先加载 backend/.env（与 Node 版共用同一份配置）
+server:
+  port: ${PORT:3000}
+  address: ${BIND_HOST:0.0.0.0}
+  forward-headers-strategy: ${FORWARD_HEADERS_STRATEGY:none}   # 经 Nginx 反代时设为 native 并配合 TRUST_PROXY
+  tomcat:
+    max-swallow-size: 20MB
+  servlet:
+    encoding:
+      charset: UTF-8
+      force: true
+
+spring:
+  application:
+    name: dbops-server
+  main:
+    banner-mode: off
+  servlet:
+    multipart:
+      max-file-size: 50MB
+      max-request-size: 60MB
+      # 延迟解析：转发给 Node 的上传请求需要原始请求体，不能被 Spring 提前解析掉
+      resolve-lazily: true
+  mvc:
+    formcontent:
+      filter:
+        enabled: false
+  jackson:
+    time-zone: UTC
+    date-format: "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'"   # 与 Node JSON.stringify(Date) 输出一致
+    serialization:
+      write-dates-as-timestamps: false
+    default-property-inclusion: always
+  task:
+    scheduling:
+      pool:
+        size: 4
+
+# dxc 2026-11-12 阶段3：OpenAPI（也可用 SYS_CONFIG phase3.openapi.enabled；环境变量可强制关闭）
+springdoc:
+  api-docs:
+    enabled: ${PHASE3_OPENAPI:true}
+    path: /v3/api-docs
+  swagger-ui:
+    enabled: ${PHASE3_OPENAPI:true}
+    path: /swagger-ui.html
+    operations-sorter: method
+    tags-sorter: alpha
+
+logging:
+  level:
+    root: INFO
+    com.dbops: INFO
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss.SSS} %-5level [%thread] %logger{36} - %msg%n"
+
+dbops:
+  # 平台库连接（同 Node：DB_CONNECT_STRING 优先，否则 DB_HOST:DB_PORT/DB_SERVICE_NAME|DB_SID）
+  datasource:
+    connect-string: ${DB_CONNECT_STRING:}
+    host: ${DB_HOST:}
+    port: ${DB_PORT:1521}
+    service-name: ${DB_SERVICE_NAME:}
+    sid: ${DB_SID:}
+    username: ${DB_USER:}
+    password: ${DB_PASSWORD:}
+    pool-min: 2
+    pool-max: 20
+  security:
+    jwt-secret: ${JWT_SECRET:}
+    jwt-expires: ${JWT_EXPIRES:8h}
+    production: ${DBOPS_PRODUCTION:${NODE_ENV:development}}
+    frontend-url: ${FRONTEND_URL:}
+    trust-proxy: ${TRUST_PROXY:false}
+    rate-limit-max: ${RATE_LIMIT_MAX:1000}
+    rate-limit-auth-max: ${RATE_LIMIT_AUTH_MAX:30}
+  monitor:
+    scheduler-enabled: ${MONITOR_SCHEDULER_ENABLED:true}
+    collect-interval-ms: ${MONITOR_COLLECT_INTERVAL_MS:}
+    collect-concurrency: ${MONITOR_COLLECT_CONCURRENCY:5}
+    ssh-connect-ms: ${MONITOR_SSH_CONNECT_MS:15000}
+    ssh-cmd-ms: ${MONITOR_SSH_CMD_MS:25000}
+    ssh-strict-host-key: ${MONITOR_SSH_STRICT_HOST_KEY:${DBOPS_SSH_STRICT:true}}   # 默认校验主机指纹（防中间人截获口令/私钥）
+    ssh-known-hosts: ${MONITOR_SSH_KNOWN_HOSTS:${DBOPS_SSH_KNOWN_HOSTS:}}   # 留空 = 运行账号的 ~/.ssh/known_hosts
+    target-connect-timeout-sec: ${MONITOR_TARGET_CONNECT_TIMEOUT_SEC:20}
+    target-query-timeout-sec: ${MONITOR_TARGET_QUERY_TIMEOUT_SEC:30}
+    mssql-encrypt: ${MSSQL_ENCRYPT:false}
+    mssql-trust-cert: ${MSSQL_TRUST_CERT:true}
+  # 尚未迁移到 Java 的接口（自动化运维/SQL 工作台/报表/AI 等）转发给 Node 旧服务
+  legacy:
+    enabled: ${LEGACY_NODE_ENABLED:true}
+    node-url: ${LEGACY_NODE_URL:http://127.0.0.1:3001}
+    timeout-sec: ${LEGACY_NODE_TIMEOUT_SEC:600}

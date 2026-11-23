@@ -1,0 +1,205 @@
+-- =============================================================================
+-- 平台运维闭环（一体）：通知外发 / 数据治理 / 告警升级 / SSO / 自监控
+-- 修改者: dxc | 时间: 2026-11-12
+-- 替代原 migration_phase1_delivery / phase2_ops / phase3_delivery（新环境只执行本脚本）
+-- 已执行旧 PHASE* 迁移的环境请再执行 migration_platform_ops_upgrade.sql
+-- =============================================================================
+
+BEGIN DI_EXEC_IGNORE('DROP TABLE NOTIFY_OUTBOX'); END;
+/
+BEGIN DI_EXEC_IGNORE('DROP TABLE NOTIFY_CHANNEL'); END;
+/
+BEGIN DI_EXEC_IGNORE('DROP TABLE BACKUP_RETENTION_LOG'); END;
+/
+BEGIN DI_EXEC_IGNORE('DROP TABLE DATA_RETENTION_RUN'); END;
+/
+BEGIN DI_EXEC_IGNORE('DROP TABLE ALERT_ESCALATION_LOG'); END;
+/
+BEGIN DI_EXEC_IGNORE('DROP TABLE ALERT_MAINTENANCE_SILENCE_LOG'); END;
+/
+BEGIN DI_EXEC_IGNORE('DROP TABLE ALERT_MAINTENANCE_WINDOW'); END;
+/
+BEGIN DI_EXEC_IGNORE('DROP TABLE BACKUP_RESTORE_DRILL'); END;
+/
+BEGIN DI_EXEC_IGNORE('DROP TABLE PLATFORM_HEALTH_SNAPSHOT'); END;
+/
+BEGIN DI_EXEC_IGNORE('DROP TABLE SSO_LOGIN_LOG'); END;
+/
+
+-- ── 通知外发 ──
+CREATE TABLE NOTIFY_CHANNEL (
+  CHANNEL_ID      NUMBER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  CHANNEL_NAME    VARCHAR2(128) NOT NULL,
+  CHANNEL_TYPE    VARCHAR2(32)  NOT NULL,
+  ENDPOINT_URL    VARCHAR2(1024),
+  SECRET_HEADER   VARCHAR2(128) DEFAULT 'X-Webhook-Token',
+  SECRET_TOKEN    VARCHAR2(512),
+  ENABLED         NUMBER(1)     DEFAULT 1,
+  MIN_SEVERITY    VARCHAR2(16)  DEFAULT 'P2',
+  CREATED_AT      TIMESTAMP     DEFAULT SYSTIMESTAMP,
+  UPDATED_BY      VARCHAR2(64),
+  UPDATED_AT      TIMESTAMP
+);
+COMMENT ON TABLE NOTIFY_CHANNEL IS '告警通知渠道（Webhook 等）';
+
+CREATE TABLE NOTIFY_OUTBOX (
+  OUTBOX_ID       NUMBER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  ALERT_ID        NUMBER        NOT NULL,
+  CHANNEL_ID      NUMBER        NOT NULL,
+  STATUS          VARCHAR2(32)  DEFAULT 'PENDING',
+  PAYLOAD         CLOB,
+  ATTEMPT_COUNT   NUMBER        DEFAULT 0,
+  LAST_ERROR      VARCHAR2(2000),
+  CREATED_AT      TIMESTAMP     DEFAULT SYSTIMESTAMP,
+  SENT_AT         TIMESTAMP
+);
+CREATE INDEX IDX_NOTIFY_OUTBOX_ST ON NOTIFY_OUTBOX(STATUS, CREATED_AT);
+CREATE UNIQUE INDEX UK_NOTIFY_OUTBOX_ALERT_CH ON NOTIFY_OUTBOX(ALERT_ID, CHANNEL_ID);
+COMMENT ON TABLE NOTIFY_OUTBOX IS '告警通知外发队列';
+
+CREATE TABLE BACKUP_RETENTION_LOG (
+  LOG_ID          NUMBER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  POLICY_ID       NUMBER,
+  RECORD_ID       NUMBER,
+  ACTION          VARCHAR2(32),
+  DETAIL          VARCHAR2(2000),
+  CREATED_AT      TIMESTAMP DEFAULT SYSTIMESTAMP
+);
+CREATE INDEX IDX_BACKUP_RET_LOG ON BACKUP_RETENTION_LOG(CREATED_AT DESC);
+
+-- ── 数据治理 / 告警闭环 ──
+CREATE TABLE DATA_RETENTION_RUN (
+  RUN_ID        NUMBER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  TASK_KEY      VARCHAR2(64) NOT NULL,
+  DELETED_ROWS  NUMBER DEFAULT 0,
+  KEEP_DAYS     NUMBER,
+  STATUS        VARCHAR2(16) DEFAULT 'OK',
+  DETAIL        VARCHAR2(2000),
+  STARTED_AT    TIMESTAMP DEFAULT SYSTIMESTAMP,
+  FINISHED_AT   TIMESTAMP
+);
+COMMENT ON TABLE DATA_RETENTION_RUN IS '平台数据保留清理执行记录';
+
+CREATE TABLE ALERT_ESCALATION_LOG (
+  LOG_ID        NUMBER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  ALERT_ID      NUMBER NOT NULL,
+  FROM_SEVERITY VARCHAR2(16),
+  TO_SEVERITY   VARCHAR2(16),
+  ESCALATION_LEVEL NUMBER DEFAULT 1,
+  REASON        VARCHAR2(512),
+  CREATED_AT    TIMESTAMP DEFAULT SYSTIMESTAMP
+);
+CREATE INDEX IDX_ALERT_ESC_ALERT ON ALERT_ESCALATION_LOG(ALERT_ID, CREATED_AT DESC);
+
+CREATE TABLE ALERT_MAINTENANCE_SILENCE_LOG (
+  LOG_ID        NUMBER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  ALERT_ID      NUMBER,
+  INSTANCE_ID   NUMBER,
+  WINDOW_SOURCE VARCHAR2(32),
+  WINDOW_TITLE  VARCHAR2(256),
+  ACTION        VARCHAR2(32),
+  CREATED_AT    TIMESTAMP DEFAULT SYSTIMESTAMP
+);
+
+CREATE TABLE ALERT_MAINTENANCE_WINDOW (
+  WINDOW_ID     NUMBER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  INSTANCE_ID   NUMBER,
+  TITLE         VARCHAR2(256),
+  START_TIME    TIMESTAMP NOT NULL,
+  END_TIME      TIMESTAMP NOT NULL,
+  ENABLED       NUMBER(1) DEFAULT 1,
+  CREATED_BY    VARCHAR2(64),
+  CREATED_AT    TIMESTAMP DEFAULT SYSTIMESTAMP
+);
+CREATE INDEX IDX_ALERT_MNT_WIN_TIME ON ALERT_MAINTENANCE_WINDOW(START_TIME, END_TIME);
+
+CREATE TABLE BACKUP_RESTORE_DRILL (
+  DRILL_ID      NUMBER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  POLICY_ID     NUMBER,
+  RECORD_ID     NUMBER,
+  INSTANCE_ID   NUMBER,
+  STATUS        VARCHAR2(32) DEFAULT 'DUE',
+  SCHEDULED_AT  TIMESTAMP,
+  NOTE          VARCHAR2(2000),
+  CREATED_AT    TIMESTAMP DEFAULT SYSTIMESTAMP,
+  FINISHED_AT   TIMESTAMP
+);
+
+-- ── 平台可观测 / SSO 审计 ──
+CREATE TABLE PLATFORM_HEALTH_SNAPSHOT (
+  SNAPSHOT_ID   NUMBER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  METRIC_KEY    VARCHAR2(64) NOT NULL,
+  METRIC_VALUE  NUMBER,
+  UNIT          VARCHAR2(16),
+  STATUS        VARCHAR2(16) DEFAULT 'OK',
+  DETAIL        VARCHAR2(2000),
+  COLLECTED_AT  TIMESTAMP DEFAULT SYSTIMESTAMP
+);
+CREATE INDEX IDX_PLAT_HEALTH_KEY_TIME ON PLATFORM_HEALTH_SNAPSHOT(METRIC_KEY, COLLECTED_AT DESC);
+
+CREATE TABLE SSO_LOGIN_LOG (
+  LOG_ID        NUMBER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  USERNAME      VARCHAR2(128),
+  SSO_MODE      VARCHAR2(16),
+  RESULT        VARCHAR2(16),
+  DETAIL        VARCHAR2(1000),
+  CLIENT_IP     VARCHAR2(64),
+  CREATED_AT    TIMESTAMP DEFAULT SYSTIMESTAMP
+);
+
+MERGE INTO SYS_CONFIG t USING (
+  SELECT 'platform.enabled' k, '1' v, 'BOOLEAN' ty, '平台运维' lb, '平台运维闭环总开关' d FROM DUAL UNION ALL
+  SELECT 'notify.enabled', '1', 'BOOLEAN', '通知外发', '告警 Webhook 外发' FROM DUAL UNION ALL
+  SELECT 'notify.poll_sec', '30', 'NUMBER', '通知外发', '外发队列扫描周期(秒)' FROM DUAL UNION ALL
+  SELECT 'backup.retention.job_enabled', '1', 'BOOLEAN', '备份治理', '备份保留期清理(Node)' FROM DUAL UNION ALL
+  SELECT 'governance.enabled', '1', 'BOOLEAN', '数据与告警治理', '保留/升级/维护窗总开关' FROM DUAL UNION ALL
+  SELECT 'retention.job_enabled', '1', 'BOOLEAN', '数据生命周期', '统一数据保留清理' FROM DUAL UNION ALL
+  SELECT 'retention.batch_size', '3000', 'NUMBER', '数据生命周期', '每任务每轮最多删除行数' FROM DUAL UNION ALL
+  SELECT 'retention.automation_exec_days', '90', 'NUMBER', '数据生命周期', 'AUTOMATION_EXEC_LOG' FROM DUAL UNION ALL
+  SELECT 'retention.script_exec_days', '90', 'NUMBER', '数据生命周期', 'SCRIPT_EXEC_LOG' FROM DUAL UNION ALL
+  SELECT 'retention.ai_chat_days', '90', 'NUMBER', '数据生命周期', 'AI_CHAT_HISTORY' FROM DUAL UNION ALL
+  SELECT 'retention.inspect_result_days', '180', 'NUMBER', '数据生命周期', 'INSPECT_RESULT' FROM DUAL UNION ALL
+  SELECT 'retention.inspect_report_days', '365', 'NUMBER', '数据生命周期', 'INSPECT_REPORT' FROM DUAL UNION ALL
+  SELECT 'retention.di_anomaly_days', '180', 'NUMBER', '数据生命周期', 'DI_SQL_ANOMALY' FROM DUAL UNION ALL
+  SELECT 'retention.di_problem_days', '180', 'NUMBER', '数据生命周期', 'DI_SQL_PROBLEM' FROM DUAL UNION ALL
+  SELECT 'alert.escalation.enabled', '1', 'BOOLEAN', '告警治理', '未认领告警升级' FROM DUAL UNION ALL
+  SELECT 'alert.escalation.ack_timeout_min', '30', 'NUMBER', '告警治理', 'OPEN未ACK超时(分钟)' FROM DUAL UNION ALL
+  SELECT 'alert.escalation.bump_severity', '1', 'BOOLEAN', '告警治理', '升级时提升级别' FROM DUAL UNION ALL
+  SELECT 'alert.maintenance.enabled', '1', 'BOOLEAN', '告警治理', '维护窗内静默告警' FROM DUAL UNION ALL
+  SELECT 'alert.maintenance.use_di_change_window', '1', 'BOOLEAN', '告警治理', '联动 DI_CHANGE_WINDOW' FROM DUAL UNION ALL
+  SELECT 'backup.restore_drill.enabled', '0', 'BOOLEAN', '备份治理', '恢复演练待办登记' FROM DUAL UNION ALL
+  SELECT 'backup.restore_drill.interval_days', '30', 'NUMBER', '备份治理', '演练登记周期(天)' FROM DUAL UNION ALL
+  SELECT 'platform.openapi.enabled', '1', 'BOOLEAN', '平台能力', 'OpenAPI/Swagger' FROM DUAL UNION ALL
+  SELECT 'platform.sso.enabled', '0', 'BOOLEAN', '平台能力', '企业 SSO 登录' FROM DUAL UNION ALL
+  SELECT 'platform.sso.mode', 'LOCAL', 'STRING', '平台能力', 'LOCAL|LDAP|OIDC|LDAP_OIDC' FROM DUAL UNION ALL
+  SELECT 'platform.sso.auto_provision', '0', 'BOOLEAN', '平台能力', 'SSO 自动开户' FROM DUAL UNION ALL
+  SELECT 'platform.sso.default_role', 'VIEWER', 'STRING', '平台能力', '自动开户默认角色' FROM DUAL UNION ALL
+  SELECT 'platform.sso.ldap.url', '', 'STRING', '平台能力', 'LDAP URL' FROM DUAL UNION ALL
+  SELECT 'platform.sso.ldap.user_dn_pattern', 'uid={username}', 'STRING', '平台能力', 'LDAP DN 模板' FROM DUAL UNION ALL
+  SELECT 'platform.sso.ldap.domain', '', 'STRING', '平台能力', 'LDAP 域名' FROM DUAL UNION ALL
+  SELECT 'platform.sso.oidc.issuer', '', 'STRING', '平台能力', 'OIDC Issuer' FROM DUAL UNION ALL
+  SELECT 'platform.sso.oidc.client_id', '', 'STRING', '平台能力', 'OIDC Client ID' FROM DUAL UNION ALL
+  SELECT 'platform.sso.oidc.client_secret', '', 'STRING', '平台能力', 'OIDC Secret' FROM DUAL UNION ALL
+  SELECT 'platform.sso.oidc.redirect_uri', '', 'STRING', '平台能力', 'OIDC 回调地址' FROM DUAL UNION ALL
+  SELECT 'platform.sso.oidc.scopes', 'openid profile', 'STRING', '平台能力', 'OIDC scopes' FROM DUAL UNION ALL
+  SELECT 'platform.health.enabled', '1', 'BOOLEAN', '平台能力', '平台自监控' FROM DUAL UNION ALL
+  SELECT 'platform.health.collect_warn_pct', '85', 'NUMBER', '平台能力', '采集成功率告警阈值%' FROM DUAL UNION ALL
+  SELECT 'platform.health.outbox_warn', '50', 'NUMBER', '平台能力', '外发积压告警阈值' FROM DUAL UNION ALL
+  SELECT 'platform.health.backup_fail_warn', '3', 'NUMBER', '平台能力', '24h备份失败阈值' FROM DUAL UNION ALL
+  SELECT 'platform.health.sqlinsight_open_warn', '200', 'NUMBER', '平台能力', 'SQL洞察OPEN阈值' FROM DUAL
+) s ON (t.CONFIG_KEY = s.k)
+WHEN MATCHED THEN UPDATE SET
+  t.CATEGORY = s.lb,
+  t.LABEL = s.d,
+  t.DESCRIPTION = s.d
+WHEN NOT MATCHED THEN INSERT (CONFIG_KEY, CONFIG_VALUE, DEFAULT_VALUE, CATEGORY, LABEL, DESCRIPTION, VALUE_TYPE, MIN_VAL, MAX_VAL)
+  VALUES (s.k, s.v, s.v, s.lb, s.d, s.d,
+          CASE WHEN s.ty = 'BOOLEAN' THEN 'BOOLEAN'
+               WHEN s.k LIKE '%batch%' OR s.k LIKE '%days%' OR s.k LIKE '%min%' OR s.k LIKE '%interval%' OR s.k LIKE '%poll%' OR s.k LIKE '%warn%' OR s.k LIKE '%pct%' THEN 'NUMBER'
+               ELSE 'STRING' END,
+          CASE WHEN s.k LIKE '%batch%' THEN 500 WHEN s.k LIKE '%days%' THEN 7 WHEN s.k LIKE '%min%' THEN 5
+               WHEN s.k LIKE '%interval%' THEN 7 WHEN s.k LIKE '%poll%' THEN 10 WHEN s.k LIKE '%warn%' THEN 0 WHEN s.k LIKE '%pct%' THEN 50 ELSE NULL END,
+          CASE WHEN s.k LIKE '%batch%' THEN 20000 WHEN s.k LIKE '%days%' THEN 3650 WHEN s.k LIKE '%min%' THEN 1440
+               WHEN s.k LIKE '%interval%' THEN 365 WHEN s.k LIKE '%poll%' THEN 300 WHEN s.k LIKE '%warn%' THEN 10000 WHEN s.k LIKE '%pct%' THEN 100 ELSE NULL END);
+
+COMMIT;

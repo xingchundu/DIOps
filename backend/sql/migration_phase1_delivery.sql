@@ -1,0 +1,3 @@
+-- 已合并至 migration_platform_ops.sql（dxc 2026-11-12）
+-- 新环境请执行: @migration_platform_ops.sql
+-- 已跑过本脚本的旧环境: @migration_platform_ops_upgrade.sql 后再 MERGE 新配置

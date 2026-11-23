@@ -1,0 +1,1163 @@
+[
+  {
+    "no": 1,
+    "category": "1. 可用性与实例",
+    "item": "实例状态",
+    "source": "v$instance.status",
+    "threshold": "status <> 'OPEN'",
+    "level": "严重",
+    "note": "含 MOUNTED/STARTING 等中间态"
+  },
+  {
+    "no": 2,
+    "category": "1. 可用性与实例",
+    "item": "实例启动时长",
+    "source": "v$instance.startup_time",
+    "threshold": "< 6h 视为意外重启",
+    "level": "严重",
+    "note": "排除计划内重启窗口"
+  },
+  {
+    "no": 3,
+    "category": "1. 可用性与实例",
+    "item": "监听器状态",
+    "source": "lsnrctl status",
+    "threshold": "非 READY / 进程丢失",
+    "level": "严重",
+    "note": "RAC 需逐节点检查"
+  },
+  {
+    "no": 4,
+    "category": "1. 可用性与实例",
+    "item": "监听器拒绝率",
+    "source": "v$listener_network / listener.log",
+    "threshold": "refused > 0",
+    "level": "警告",
+    "note": "常与连接风暴同时出现"
+  },
+  {
+    "no": 5,
+    "category": "1. 可用性与实例",
+    "item": "后台进程存活",
+    "source": "OS 进程 + v$bgprocess",
+    "threshold": "smon/pmon/dbwN/lgwr/ckpt 缺失",
+    "level": "严重",
+    "note": "ps -ef | grep ora_"
+  },
+  {
+    "no": 6,
+    "category": "1. 可用性与实例",
+    "item": "RAC 集群资源状态",
+    "source": "crsctl stat res -t",
+    "threshold": "任一资源 OFFLINE",
+    "level": "严重",
+    "note": "RAC 必配"
+  },
+  {
+    "no": 7,
+    "category": "1. 可用性与实例",
+    "item": "RAC 节点成员数",
+    "source": "gv$instance",
+    "threshold": "节点数 <> 预期值",
+    "level": "严重",
+    "note": "识别节点驱逐"
+  },
+  {
+    "no": 8,
+    "category": "1. 可用性与实例",
+    "item": "RAC 私网心跳",
+    "source": "crsctl stat res -t -init / OS 网卡",
+    "threshold": "心跳丢包 > 0 或延迟高",
+    "level": "严重",
+    "note": "私网问题会引发节点驱逐"
+  },
+  {
+    "no": 9,
+    "category": "1. 可用性与实例",
+    "item": "RAC 全局队列服务",
+    "source": "gv$ges_statistics",
+    "threshold": "阻塞/失败计数增长",
+    "level": "警告",
+    "note": "关注 convert 失败"
+  },
+  {
+    "no": 10,
+    "category": "1. 可用性与实例",
+    "item": "会话数",
+    "source": "v$session",
+    "threshold": "超 sessions 参数 80%",
+    "level": "警告",
+    "note": "区分 active/inactive"
+  },
+  {
+    "no": 11,
+    "category": "1. 可用性与实例",
+    "item": "会话/进程资源使用率",
+    "source": "v$resource_limit",
+    "threshold": "current/max > 80%",
+    "level": "警告",
+    "note": "sessions/processes 两个维度"
+  },
+  {
+    "no": 12,
+    "category": "1. 可用性与实例",
+    "item": "服务可用性",
+    "source": "gv$active_services",
+    "threshold": "关键服务非 ONLINE",
+    "level": "严重",
+    "note": "按业务服务名分别监控"
+  },
+  {
+    "no": 13,
+    "category": "1. 可用性与实例",
+    "item": "归档模式基线",
+    "source": "v$database.log_mode",
+    "threshold": "与基线配置不符",
+    "level": "警告",
+    "note": "配置型监控"
+  },
+  {
+    "no": 14,
+    "category": "1. 可用性与实例",
+    "item": "数据库角色",
+    "source": "v$database.database_role",
+    "threshold": "主备角色漂移",
+    "level": "严重",
+    "note": "DG 环境关键"
+  },
+  {
+    "no": 15,
+    "category": "1. 可用性与实例",
+    "item": "数据库打开模式",
+    "source": "v$database.open_mode",
+    "threshold": "非 READ WRITE（主库）",
+    "level": "警告",
+    "note": ""
+  },
+  {
+    "no": 16,
+    "category": "2. 性能与等待",
+    "item": "DB Time 每秒",
+    "source": "v$sysmetric",
+    "threshold": "超过基线 2σ",
+    "level": "警告",
+    "note": "核心吞吐指标"
+  },
+  {
+    "no": 17,
+    "category": "2. 性能与等待",
+    "item": "DB CPU 使用率",
+    "source": "v$sysmetric",
+    "threshold": "> CPU 核数 × 80%",
+    "level": "警告",
+    "note": "对比主机 CPU"
+  },
+  {
+    "no": 18,
+    "category": "2. 性能与等待",
+    "item": "平均活跃会话数(AAS)",
+    "source": "v$sysmetric / v$active_session_history",
+    "threshold": "AAS > CPU 核数",
+    "level": "警告",
+    "note": "OEM 核心性能基线"
+  },
+  {
+    "no": 19,
+    "category": "2. 性能与等待",
+    "item": "DB Time 占比",
+    "source": "v$sysmetric",
+    "threshold": "超基线",
+    "level": "警告",
+    "note": ""
+  },
+  {
+    "no": 20,
+    "category": "2. 性能与等待",
+    "item": "Top 等待事件",
+    "source": "v$system_event / v$eventmetric",
+    "threshold": "非 Idle 事件占比突增",
+    "level": "警告",
+    "note": "排除 Idle 类事件"
+  },
+  {
+    "no": 21,
+    "category": "2. 性能与等待",
+    "item": "Top SQL(按 DB Time)",
+    "source": "v$sql / v$sqlstats",
+    "threshold": "单 SQL DB Time 占比 > 20%",
+    "level": "警告",
+    "note": ""
+  },
+  {
+    "no": 22,
+    "category": "2. 性能与等待",
+    "item": "SQL Monitor 长 SQL",
+    "source": "v$sql_monitor",
+    "threshold": "执行 > N 分钟(建议 5min)",
+    "level": "警告",
+    "note": "需开启监控"
+  },
+  {
+    "no": 23,
+    "category": "2. 性能与等待",
+    "item": "用户响应时间",
+    "source": "v$sysmetric",
+    "threshold": "超基线",
+    "level": "警告",
+    "note": ""
+  },
+  {
+    "no": 24,
+    "category": "2. 性能与等待",
+    "item": "事务响应时间",
+    "source": "v$sysmetric",
+    "threshold": "超基线",
+    "level": "警告",
+    "note": ""
+  },
+  {
+    "no": 25,
+    "category": "2. 性能与等待",
+    "item": "每秒执行次数",
+    "source": "v$sysmetric",
+    "threshold": "骤降（业务中断信号）",
+    "level": "警告",
+    "note": "结合业务量判断"
+  },
+  {
+    "no": 26,
+    "category": "2. 性能与等待",
+    "item": "逻辑读/物理读",
+    "source": "v$sysmetric",
+    "threshold": "突增超基线",
+    "level": "警告",
+    "note": ""
+  },
+  {
+    "no": 27,
+    "category": "2. 性能与等待",
+    "item": "解析次数(软/硬)",
+    "source": "v$sysmetric",
+    "threshold": "硬解析占比 > 10%",
+    "level": "警告",
+    "note": ""
+  },
+  {
+    "no": 28,
+    "category": "2. 性能与等待",
+    "item": "ASH 采样基线偏离",
+    "source": "v$active_session_history",
+    "threshold": "活跃会话结构突变",
+    "level": "警告",
+    "note": "需 Diagnostics Pack"
+  },
+  {
+    "no": 29,
+    "category": "2. 性能与等待",
+    "item": "AWR 快照完整性",
+    "source": "dba_hist_snapshot",
+    "threshold": "快照缺失/间隔异常",
+    "level": "警告",
+    "note": "断档影响历史诊断"
+  },
+  {
+    "no": 30,
+    "category": "2. 性能与等待",
+    "item": "阻塞会话",
+    "source": "v$session.blocking_session",
+    "threshold": "存在阻塞链",
+    "level": "严重",
+    "note": "可递归追溯根节点"
+  },
+  {
+    "no": 31,
+    "category": "2. 性能与等待",
+    "item": "行锁等待时长",
+    "source": "v$session / v$lock",
+    "threshold": "单次等待 > 60s",
+    "level": "警告",
+    "note": ""
+  },
+  {
+    "no": 32,
+    "category": "2. 性能与等待",
+    "item": "并行执行进程",
+    "source": "v$px_process / v$px_session",
+    "threshold": "并行度超限/进程泄漏",
+    "level": "警告",
+    "note": ""
+  },
+  {
+    "no": 33,
+    "category": "2. 性能与等待",
+    "item": "资源管理器限流",
+    "source": "v$rsrc_consumer_group",
+    "threshold": "消费者组被限流",
+    "level": "一搬",
+    "note": ""
+  },
+  {
+    "no": 34,
+    "category": "2. 性能与等待",
+    "item": "DB Time 分布",
+    "source": "v$sysmetric",
+    "threshold": "CPU/Wait/IO 比例失衡",
+    "level": "警告",
+    "note": "CPU 与 Wait 拆分分析"
+  },
+  {
+    "no": 35,
+    "category": "2. 性能与等待",
+    "item": "监听连接数",
+    "source": "listener.log",
+    "threshold": "每分钟不超过1000次连接",
+    "level": "严重",
+    "note": "每分钟监听连接数，防止连接风暴"
+  },
+  {
+    "no": 36,
+    "category": "3. 空间与存储",
+    "item": "表空间使用率",
+    "source": "dba_tablespace_usage_metrics",
+    "threshold": "> 85% 警告 / > 95% 严重",
+    "level": "警告/严重",
+    "note": "按表空间分别设阈值"
+  },
+  {
+    "no": 37,
+    "category": "3. 空间与存储",
+    "item": "表空间可扩展剩余",
+    "source": "dba_data_files (autoextensible)",
+    "threshold": "无自动扩展且剩余 < 10%",
+    "level": "严重",
+    "note": "重点: 不可扩展表空间"
+  },
+  {
+    "no": 38,
+    "category": "3. 空间与存储",
+    "item": "数据文件扩展上限",
+    "source": "dba_data_files.maxbytes",
+    "threshold": "size 已达 maxbytes",
+    "level": "严重",
+    "note": ""
+  },
+  {
+    "no": 39,
+    "category": "3. 空间与存储",
+    "item": "UNDO 表空间使用",
+    "source": "v$undostat / dba_undo_extents",
+    "threshold": "> 85% 或 unexpired 过多",
+    "level": "警告",
+    "note": "结合 undo_retention"
+  },
+  {
+    "no": 40,
+    "category": "3. 空间与存储",
+    "item": "TEMP 表空间使用",
+    "source": "v$temp_space_header / dba_temp_files",
+    "threshold": "> 80%",
+    "level": "警告",
+    "note": ""
+  },
+  {
+    "no": 41,
+    "category": "3. 空间与存储",
+    "item": "闪回恢复区(FRA)",
+    "source": "v$recovery_file_dest",
+    "threshold": "percent_space_used > 80% / 100%",
+    "level": "警告/严重",
+    "note": "FRA 满会导致库挂起"
+  },
+  {
+    "no": 42,
+    "category": "3. 空间与存储",
+    "item": "归档日志空间",
+    "source": "v$archived_log / FRA",
+    "threshold": "空间不足导致归档挂起",
+    "level": "严重",
+    "note": "与 FRA 联动"
+  },
+  {
+    "no": 43,
+    "category": "3. 空间与存储",
+    "item": "归档生成速率",
+    "source": "v$archived_log",
+    "threshold": "突增（异常大批量）",
+    "level": "警告",
+    "note": "业务异常早期信号"
+  },
+  {
+    "no": 44,
+    "category": "3. 空间与存储",
+    "item": "ASM 磁盘组使用率",
+    "source": "v$asm_diskgroup",
+    "threshold": "> 80% 警告 / > 90% 严重",
+    "level": "警告/严重",
+    "note": "RAC/ASM 必配"
+  },
+  {
+    "no": 45,
+    "category": "3. 空间与存储",
+    "item": "ASM 磁盘组剩余",
+    "source": "v$asm_diskgroup.usable_file_mb",
+    "threshold": "usable_file_mb 不足",
+    "level": "严重",
+    "note": "按冗余级别判断"
+  },
+  {
+    "no": 46,
+    "category": "3. 空间与存储",
+    "item": "ASM 磁盘离线",
+    "source": "v$asm_disk",
+    "threshold": "状态非 NORMAL",
+    "level": "严重",
+    "note": ""
+  },
+  {
+    "no": 47,
+    "category": "3. 空间与存储",
+    "item": "ASM rebalance",
+    "source": "v$asm_operation",
+    "threshold": "长时间未完成",
+    "level": "警告",
+    "note": ""
+  },
+  {
+    "no": 48,
+    "category": "3. 空间与存储",
+    "item": "段增长异常",
+    "source": "dba_segments",
+    "threshold": "单段日增超基线",
+    "level": "警告",
+    "note": "提前预判空间风险"
+  },
+  {
+    "no": 49,
+    "category": "3. 空间与存储",
+    "item": "回收站空间",
+    "source": "dba_recyclebin",
+    "threshold": "占用超阈值",
+    "level": "一搬",
+    "note": "purge 清理"
+  },
+  {
+    "no": 50,
+    "category": "3. 空间与存储",
+    "item": "LOB/大对象占用",
+    "source": "dba_lobs / dba_segments",
+    "threshold": "异常增长",
+    "level": "一搬",
+    "note": ""
+  },
+  {
+    "no": 51,
+    "category": "3. 空间与存储",
+    "item": "表/索引统计陈旧",
+    "source": "dba_tab_statistics",
+    "threshold": "stale_stats = 'YES'",
+    "level": "警告",
+    "note": "直接影响执行计划"
+  },
+  {
+    "no": 52,
+    "category": "3. 空间与存储",
+    "item": "底层文件系统",
+    "source": "df -h / 主机监控",
+    "threshold": "use% > 85%",
+    "level": "警告",
+    "note": "数据文件/归档/软件目录所在挂载点"
+  },
+  {
+    "no": 53,
+    "category": "3. 空间与存储",
+    "item": "数据文件 I/O 延迟",
+    "source": "v$filemetric (需许可)",
+    "threshold": "> 20ms",
+    "level": "警告",
+    "note": ""
+  },
+  {
+    "no": 54,
+    "category": "4. 争用与资源",
+    "item": "死锁",
+    "source": "v$sysmetric / alert log",
+    "threshold": "出现即告警",
+    "level": "严重",
+    "note": "ORA-00060"
+  },
+  {
+    "no": 55,
+    "category": "4. 争用与资源",
+    "item": "enqueue 等待",
+    "source": "v$enqueue_stat",
+    "threshold": "增长突增",
+    "level": "警告",
+    "note": ""
+  },
+  {
+    "no": 56,
+    "category": "4. 争用与资源",
+    "item": "latch 命中率",
+    "source": "v$latch",
+    "threshold": "< 99%",
+    "level": "警告",
+    "note": ""
+  },
+  {
+    "no": 57,
+    "category": "4. 争用与资源",
+    "item": "latch 空闲等待热点",
+    "source": "v$latch / v$latch_children",
+    "threshold": "特定 latch 突变",
+    "level": "警告",
+    "note": "重点关注 cache buffers chains"
+  },
+  {
+    "no": 58,
+    "category": "4. 争用与资源",
+    "item": "mutex 争用",
+    "source": "v$mutex_sleep",
+    "threshold": "突增",
+    "level": "警告",
+    "note": "多与硬解析/ORA-4031 相关"
+  },
+  {
+    "no": 59,
+    "category": "4. 争用与资源",
+    "item": "log file sync 响应",
+    "source": "v$sysmetric",
+    "threshold": "> 10ms 警告 / > 20ms 严重",
+    "level": "警告/严重",
+    "note": "提交延迟核心指标"
+  },
+  {
+    "no": 60,
+    "category": "4. 争用与资源",
+    "item": "log file parallel write",
+    "source": "v$sysmetric",
+    "threshold": "IO 延迟高",
+    "level": "警告",
+    "note": "底层存储写性能"
+  },
+  {
+    "no": 61,
+    "category": "4. 争用与资源",
+    "item": "buffer busy waits",
+    "source": "v$system_event",
+    "threshold": "占比 > 5%",
+    "level": "警告",
+    "note": ""
+  },
+  {
+    "no": 62,
+    "category": "4. 争用与资源",
+    "item": "ITL / 段头争用",
+    "source": "v$segment_statistics",
+    "threshold": "特定对象争用",
+    "level": "警告",
+    "note": "考虑加大 INITRANS"
+  },
+  {
+    "no": 63,
+    "category": "4. 争用与资源",
+    "item": "热块争用",
+    "source": "v$active_session_history",
+    "threshold": "单块等待密集",
+    "level": "警告",
+    "note": ""
+  },
+  {
+    "no": 64,
+    "category": "4. 争用与资源",
+    "item": "gc buffer busy (RAC)",
+    "source": "gv$system_event",
+    "threshold": "节点间传输等待",
+    "level": "警告",
+    "note": "RAC 必配"
+  },
+  {
+    "no": 65,
+    "category": "4. 争用与资源",
+    "item": "库缓存争用",
+    "source": "v$librarycache",
+    "threshold": "getmisses/reloads 高",
+    "level": "警告",
+    "note": ""
+  },
+  {
+    "no": 66,
+    "category": "4. 争用与资源",
+    "item": "字典缓存争用",
+    "source": "v$rowcache",
+    "threshold": "命中率低",
+    "level": "警告",
+    "note": ""
+  },
+  {
+    "no": 67,
+    "category": "4. 争用与资源",
+    "item": "undo 争用",
+    "source": "v$undostat",
+    "threshold": "活动事务堆积",
+    "level": "警告",
+    "note": ""
+  },
+  {
+    "no": 68,
+    "category": "4. 争用与资源",
+    "item": "Redo 生成速率",
+    "source": "v$sysstat",
+    "threshold": "突增",
+    "level": "警告",
+    "note": ""
+  },
+  {
+    "no": 69,
+    "category": "4. 争用与资源",
+    "item": "日志切换频率",
+    "source": "v$log_history",
+    "threshold": "< 20 分钟/次",
+    "level": "警告",
+    "note": "比 redo 大小更能反映压力"
+  },
+  {
+    "no": 70,
+    "category": "4. 争用与资源",
+    "item": "Checkpoint 未完成",
+    "source": "alert log",
+    "threshold": "出现 'checkpoint not complete'",
+    "level": "严重",
+    "note": ""
+  },
+  {
+    "no": 71,
+    "category": "4. 争用与资源",
+    "item": "跨节点阻塞 (RAC)",
+    "source": "gv$ges_blocking_enqueue",
+    "threshold": "存在阻塞链",
+    "level": "警告",
+    "note": "OEM 阻塞链定位弱"
+  },
+  {
+    "no": 72,
+    "category": "5. 内存与 SGA",
+    "item": "SGA 总大小变化",
+    "source": "v$sga",
+    "threshold": "与基线偏离",
+    "level": "一搬",
+    "note": ""
+  },
+  {
+    "no": 73,
+    "category": "5. 内存与 SGA",
+    "item": "Buffer Cache 命中率",
+    "source": "v$sysmetric",
+    "threshold": "< 90% (OLTP)",
+    "level": "警告",
+    "note": ""
+  },
+  {
+    "no": 74,
+    "category": "5. 内存与 SGA",
+    "item": "Buffer Cache 使用",
+    "source": "v$buffer_pool_statistics",
+    "threshold": "异常",
+    "level": "警告",
+    "note": ""
+  },
+  {
+    "no": 75,
+    "category": "5. 内存与 SGA",
+    "item": "Shared Pool 自由空间",
+    "source": "v$sgastat",
+    "threshold": "free memory 偏低",
+    "level": "警告",
+    "note": ""
+  },
+  {
+    "no": 76,
+    "category": "5. 内存与 SGA",
+    "item": "ORA-04031 报错",
+    "source": "alert log",
+    "threshold": "出现即告警",
+    "level": "严重",
+    "note": "共享池不足"
+  },
+  {
+    "no": 77,
+    "category": "5. 内存与 SGA",
+    "item": "库缓存对象淘汰",
+    "source": "v$librarycache",
+    "threshold": "reloads 突增",
+    "level": "警告",
+    "note": ""
+  },
+  {
+    "no": 78,
+    "category": "5. 内存与 SGA",
+    "item": "PGA 使用率",
+    "source": "v$pgastat",
+    "threshold": "超 pga_aggregate_target",
+    "level": "警告",
+    "note": ""
+  },
+  {
+    "no": 79,
+    "category": "5. 内存与 SGA",
+    "item": "PGA 缓存命中率",
+    "source": "v$pgastat",
+    "threshold": "< 90%",
+    "level": "警告",
+    "note": ""
+  },
+  {
+    "no": 80,
+    "category": "5. 内存与 SGA",
+    "item": "内存过度分配",
+    "source": "v$pgastat",
+    "threshold": "> 0 且增长",
+    "level": "警告",
+    "note": ""
+  },
+  {
+    "no": 81,
+    "category": "5. 内存与 SGA",
+    "item": "AMM/ASMM 调整",
+    "source": "v$memory_target_advice",
+    "threshold": "频繁调整",
+    "level": "一搬",
+    "note": ""
+  },
+  {
+    "no": 82,
+    "category": "5. 内存与 SGA",
+    "item": "In-Memory 列存",
+    "source": "v$im_segments",
+    "threshold": "填充率/空间不足",
+    "level": "一搬",
+    "note": "需 In-Memory 选项"
+  },
+  {
+    "no": 83,
+    "category": "5. 内存与 SGA",
+    "item": "排序/哈希区使用",
+    "source": "v$sysstat",
+    "threshold": "磁盘排序占比高",
+    "level": "警告",
+    "note": ""
+  },
+  {
+    "no": 84,
+    "category": "5. 内存与 SGA",
+    "item": "OS 物理内存",
+    "source": "主机监控",
+    "threshold": "物理内存 use% > 90%",
+    "level": "警告",
+    "note": ""
+  },
+  {
+    "no": 85,
+    "category": "5. 内存与 SGA",
+    "item": "Swap 交换空间",
+    "source": "主机监控",
+    "threshold": "swap 使用 > 0",
+    "level": "警告",
+    "note": "换页会严重拖慢 DB"
+  },
+  {
+    "no": 86,
+    "category": "6. SQL 与执行计划",
+    "item": "Top SQL by DB Time",
+    "source": "v$sql / dba_hist_sqlstat",
+    "threshold": "占比突增",
+    "level": "警告",
+    "note": ""
+  },
+  {
+    "no": 87,
+    "category": "6. SQL 与执行计划",
+    "item": "Top SQL by Buffer Gets",
+    "source": "v$sql",
+    "threshold": "逻辑读异常",
+    "level": "警告",
+    "note": ""
+  },
+  {
+    "no": 88,
+    "category": "6. SQL 与执行计划",
+    "item": "Top SQL by 物理读",
+    "source": "v$sql",
+    "threshold": "物理读异常",
+    "level": "警告",
+    "note": ""
+  },
+  {
+    "no": 89,
+    "category": "6. SQL 与执行计划",
+    "item": "单次执行耗时劣化",
+    "source": "v$sqlstats",
+    "threshold": "超基线 2 倍",
+    "level": "警告",
+    "note": ""
+  },
+  {
+    "no": 90,
+    "category": "6. SQL 与执行计划",
+    "item": "SQL 执行计划翻转",
+    "source": "dba_hist_sql_plan / SPM",
+    "threshold": "计划 hash 变更",
+    "level": "严重",
+    "note": "需定期 diff 快照"
+  },
+  {
+    "no": 91,
+    "category": "6. SQL 与执行计划",
+    "item": "SQL 性能基线偏离",
+    "source": "dba_hist_sqlstat",
+    "threshold": "超 AWR baseline",
+    "level": "警告",
+    "note": ""
+  },
+  {
+    "no": 92,
+    "category": "6. SQL 与执行计划",
+    "item": "SQL Monitor 活动",
+    "source": "v$sql_monitor",
+    "threshold": "长 SQL 出现",
+    "level": "警告",
+    "note": ""
+  },
+  {
+    "no": 93,
+    "category": "6. SQL 与执行计划",
+    "item": "硬解析率",
+    "source": "v$sysmetric",
+    "threshold": "> 10% 或每秒 > 100",
+    "level": "警告",
+    "note": ""
+  },
+  {
+    "no": 94,
+    "category": "6. SQL 与执行计划",
+    "item": "游标泄漏",
+    "source": "v$open_cursor",
+    "threshold": "超 open_cursors 80%",
+    "level": "警告",
+    "note": ""
+  },
+  {
+    "no": 95,
+    "category": "6. SQL 与执行计划",
+    "item": "子游标暴涨",
+    "source": "v$sql",
+    "threshold": "单 SQL 子游标 > 100",
+    "level": "警告",
+    "note": "绑定变量问题信号"
+  },
+  {
+    "no": 96,
+    "category": "6. SQL 与执行计划",
+    "item": "自适应游标(ACS)",
+    "source": "v$sql_cs_*",
+    "threshold": "过度自适应",
+    "level": "一搬",
+    "note": ""
+  },
+  {
+    "no": 97,
+    "category": "6. SQL 与执行计划",
+    "item": "无效对象",
+    "source": "dba_objects",
+    "threshold": "status = 'INVALID'",
+    "level": "警告",
+    "note": ""
+  },
+  {
+    "no": 98,
+    "category": "6. SQL 与执行计划",
+    "item": "SQL 计划基线未使用",
+    "source": "dba_sql_plan_baselines",
+    "threshold": "基线未生效",
+    "level": "一搬",
+    "note": ""
+  },
+  {
+    "no": 99,
+    "category": "6. SQL 与执行计划",
+    "item": "绑定变量窥探问题",
+    "source": "v$sql_shared_cursor",
+    "threshold": "多版本计划",
+    "level": "警告",
+    "note": ""
+  },
+  {
+    "no": 100,
+    "category": "6. SQL 与执行计划",
+    "item": "并行 SQL 失控",
+    "source": "v$px_session",
+    "threshold": "DOP 超预期",
+    "level": "警告",
+    "note": ""
+  },
+  {
+    "no": 101,
+    "category": "7. 备份与数据保护",
+    "item": "RMAN 备份作业状态",
+    "source": "v$rman_backup_job_details",
+    "threshold": "失败/超时",
+    "level": "严重",
+    "note": ""
+  },
+  {
+    "no": 102,
+    "category": "7. 备份与数据保护",
+    "item": "最近成功备份时间",
+    "source": "v$rman_backup_job_details",
+    "threshold": "超过 RPO 窗口",
+    "level": "严重",
+    "note": "按 RPO 定义窗口"
+  },
+  {
+    "no": 103,
+    "category": "7. 备份与数据保护",
+    "item": "RMAN 作业耗时",
+    "source": "v$rman_backup_job_details",
+    "threshold": "超基线",
+    "level": "警告",
+    "note": ""
+  },
+  {
+    "no": 104,
+    "category": "7. 备份与数据保护",
+    "item": "归档应用延迟(DG)",
+    "source": "v$dataguard_stats",
+    "threshold": "apply lag > 阈值",
+    "level": "严重",
+    "note": "DG 必配"
+  },
+  {
+    "no": 105,
+    "category": "7. 备份与数据保护",
+    "item": "传输延迟(DG)",
+    "source": "v$dataguard_stats",
+    "threshold": "> 阈值",
+    "level": "警告",
+    "note": ""
+  },
+  {
+    "no": 106,
+    "category": "7. 备份与数据保护",
+    "item": "归档 GAP(DG)",
+    "source": "v$archive_gap",
+    "threshold": "存在 GAP",
+    "level": "严重",
+    "note": ""
+  },
+  {
+    "no": 107,
+    "category": "7. 备份与数据保护",
+    "item": "DG 备库进程状态",
+    "source": "v$managed_standby",
+    "threshold": "进程异常(MRP/RFS)",
+    "level": "严重",
+    "note": ""
+  },
+  {
+    "no": 108,
+    "category": "7. 备份与数据保护",
+    "item": "备份集完整性校验",
+    "source": "v$backup_* / RMAN VALIDATE",
+    "threshold": "校验失败",
+    "level": "警告",
+    "note": ""
+  },
+  {
+    "no": 109,
+    "category": "7. 备份与数据保护",
+    "item": "DG 保护模式",
+    "source": "v$database.protection_mode",
+    "threshold": "保护模式降级",
+    "level": "严重",
+    "note": ""
+  },
+  {
+    "no": 110,
+    "category": "7. 备份与数据保护",
+    "item": "Flashback 回收点",
+    "source": "v$flashback_database_log",
+    "threshold": "空间不足",
+    "level": "警告",
+    "note": ""
+  },
+  {
+    "no": 111,
+    "category": "7. 备份与数据保护",
+    "item": "Data Pump 逻辑备份",
+    "source": "dba_datapump_jobs",
+    "threshold": "作业失败/挂起",
+    "level": "警告",
+    "note": ""
+  },
+  {
+    "no": 112,
+    "category": "8. 作业与告警日志",
+    "item": "Scheduler Job 失败",
+    "source": "dba_scheduler_job_run_details",
+    "threshold": "status = 'FAILED'",
+    "level": "警告",
+    "note": ""
+  },
+  {
+    "no": 113,
+    "category": "8. 作业与告警日志",
+    "item": "作业执行超时",
+    "source": "dba_scheduler_jobs",
+    "threshold": "超预期时长",
+    "level": "警告",
+    "note": ""
+  },
+  {
+    "no": 114,
+    "category": "8. 作业与告警日志",
+    "item": "长时间运行作业",
+    "source": "dba_scheduler_running_jobs",
+    "threshold": "> N 小时",
+    "level": "警告",
+    "note": ""
+  },
+  {
+    "no": 115,
+    "category": "8. 作业与告警日志",
+    "item": "Alert Log 严重错误",
+    "source": "x$dbgalertext / alert log",
+    "threshold": "ORA-00600/07445/01555 等",
+    "level": "严重",
+    "note": "需正则匹配关键 ORA"
+  },
+  {
+    "no": 116,
+    "category": "8. 作业与告警日志",
+    "item": "ORA-01555 快照过旧",
+    "source": "alert log",
+    "threshold": "出现即告警",
+    "level": "警告",
+    "note": ""
+  },
+  {
+    "no": 117,
+    "category": "8. 作业与告警日志",
+    "item": "ORA-00600/07445 内部错误",
+    "source": "alert log",
+    "threshold": "出现即告警",
+    "level": "严重",
+    "note": "需提交 SR"
+  },
+  {
+    "no": 118,
+    "category": "8. 作业与告警日志",
+    "item": "表空间扩展失败",
+    "source": "alert log",
+    "threshold": "出现即告警",
+    "level": "严重",
+    "note": ""
+  },
+  {
+    "no": 119,
+    "category": "8. 作业与告警日志",
+    "item": "监听日志错误",
+    "source": "listener.log",
+    "threshold": "出现 TNS- 错误",
+    "level": "警告",
+    "note": ""
+  },
+  {
+    "no": 120,
+    "category": "9. 安全与合规",
+    "item": "失败登录次数",
+    "source": "dba_audit_trail / v$sysstat",
+    "threshold": "突增（暴力破解）",
+    "level": "警告",
+    "note": "需开启审计"
+  },
+  {
+    "no": 121,
+    "category": "9. 安全与合规",
+    "item": "权限变更",
+    "source": "dba_audit_trail",
+    "threshold": "DDL/GRANT 变更",
+    "level": "警告",
+    "note": ""
+  },
+  {
+    "no": 122,
+    "category": "9. 安全与合规",
+    "item": "账号创建/删除",
+    "source": "dba_users / 审计",
+    "threshold": "非变更窗口操作",
+    "level": "警告",
+    "note": ""
+  },
+  {
+    "no": 123,
+    "category": "9. 安全与合规",
+    "item": "默认账号状态",
+    "source": "dba_users",
+    "threshold": "默认账号启用",
+    "level": "警告",
+    "note": "如 SCOTT/HR 等"
+  },
+  {
+    "no": 124,
+    "category": "9. 安全与合规",
+    "item": "密码过期临近",
+    "source": "dba_users.expiry_date",
+    "threshold": "< 15 天",
+    "level": "警告",
+    "note": "避免应用连接中断"
+  },
+  {
+    "no": 125,
+    "category": "9. 安全与合规",
+    "item": "Profile 变更",
+    "source": "dba_profiles",
+    "threshold": "与基线不符",
+    "level": "一搬",
+    "note": ""
+  },
+  {
+    "no": 126,
+    "category": "9. 安全与合规",
+    "item": "审计配置",
+    "source": "audit_trail 参数",
+    "threshold": null,
+    "level": "警告",
+    "note": "配置型监控"
+  },
+  {
+    "no": 127,
+    "category": "9. 安全与合规",
+    "item": "安全补丁版本",
+    "source": "dba_registry_sqlpatch",
+    "threshold": "未打关键补丁",
+    "level": "警告",
+    "note": ""
+  },
+  {
+    "no": 128,
+    "category": "9. 安全与合规",
+    "item": "DDL 变更",
+    "source": "dba_objects.last_ddl_time",
+    "threshold": "生产环境非窗口变更",
+    "level": "一搬",
+    "note": ""
+  },
+  {
+    "no": 129,
+    "category": "9. 安全与合规",
+    "item": "高危权限授予",
+    "source": "dba_role_privs / dba_sys_privs",
+    "threshold": "DBA 权限新增",
+    "level": "警告",
+    "note": ""
+  }
+]
