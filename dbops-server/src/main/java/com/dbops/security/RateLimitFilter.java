@@ -16,12 +16,12 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
- * 按 IP 的固定窗口限流（同 Node express-rate-limit 配置）：全局 15 分钟 RATE_LIMIT_MAX 次，登录 15 分钟 RATE_LIMIT_AUTH_MAX 次。
+ * 按 IP 的固定窗口限流（同 Node express-rate-limit 配置）：全局 5 分钟 RATE_LIMIT_MAX 次，登录 5 分钟 RATE_LIMIT_AUTH_MAX 次。
  */
 @Component
 public class RateLimitFilter extends OncePerRequestFilter {
 
-    private static final long WINDOW_MS = 15 * 60 * 1000L;
+    private static final long WINDOW_MS = 5 * 60 * 1000L;
 
     private final int globalMax;
     private final int authMax;

@@ -71,7 +71,7 @@
           <thead><tr><th>SQL</th><th>实例</th><th class="n">DB Time(s)</th><th class="n">执行</th><th class="n">平均ms</th><th class="n">逻辑读/次</th></tr></thead>
           <tbody>
             <tr v-for="r in data.topSql || []" :key="r.ASSET_ID + '-' + r.INSTANCE_ID" @click="$router.push({ path: '/sql-insight', query: { assetId: r.ASSET_ID, instanceId: r.INSTANCE_ID } })">
-              <td class="sql" :title="r.SQL_TEXT">#{{ r.ASSET_ID }} {{ r.SQL_TEXT }}</td>
+              <td class="sql" :title="r.SQL_TEXT">#{{ r.ASSET_ID }} <b v-if="r.NATIVE_SQL_ID">[{{ String(r.NATIVE_SQL_ID).split('|').pop() }}]</b> {{ r.SQL_TEXT }}</td>
               <td>{{ r.INSTANCE_NAME }}</td><td class="n">{{ r.DB_TIME_SEC }}</td><td class="n">{{ r.EXECS }}</td>
               <td class="n">{{ r.AVG_MS }}</td><td class="n">{{ r.LR_PER_EXEC ?? '-' }}</td>
             </tr>
@@ -103,7 +103,7 @@
           <thead><tr><th>SQL</th><th>实例</th><th class="n">平均ms</th><th class="n">最大ms</th><th class="n">执行</th><th>全表扫描</th><th>采集</th></tr></thead>
           <tbody>
             <tr v-for="r in data.slowTop || []" :key="r.ROW_ID" @click="$router.push({ path: '/sql', query: { tab: 'slow', instanceId: r.INSTANCE_ID } })">
-              <td class="sql" :title="r.SQL_TEXT">{{ r.SQL_TEXT }}</td><td>{{ r.INSTANCE_NAME }}</td>
+              <td class="sql" :title="r.SQL_TEXT"><b v-if="r.NATIVE_SQL_ID">[{{ r.NATIVE_SQL_ID }}]</b> {{ r.SQL_TEXT }}</td><td>{{ r.INSTANCE_NAME }}</td>
               <td class="n">{{ r.AVG_ELAPSED }}</td><td class="n">{{ r.MAX_ELAPSED ?? '-' }}</td><td class="n">{{ r.EXEC_COUNT }}</td>
               <td>{{ r.FULL_SCAN == 1 || r.FULL_SCAN === 'Y' ? '是' : '' }}</td><td>{{ hm(r.CAPTURE_TIME) }}</td>
             </tr>

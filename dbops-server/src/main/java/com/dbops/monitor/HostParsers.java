@@ -20,7 +20,35 @@ public final class HostParsers {
     private static final Pattern US = Pattern.compile("([0-9.]+)\\s*%?\\s*us\\b", Pattern.CASE_INSENSITIVE);
     private static final Pattern SY = Pattern.compile("([0-9.]+)\\s*%?\\s*sy\\b", Pattern.CASE_INSENSITIVE);
 
-    /** top -bn1 的 Cpu(s) 行 → 使用率百分比 */
+    /**
+     * 当前 CPU 使用率。/proc/stat 差值命令只输出一个数；top 多帧时用最后一帧
+     * （第一帧是开机至今的平均）。
+     */
+    public static Double parseCpuSample(String text) {
+        if (text == null) {
+            return null;
+        }
+        String last = "";
+        for (String line : text.split("\n")) {
+            if (!line.isBlank()) {
+                last = line.trim();
+            }
+        }
+        if (last.isEmpty()) {
+            return null;
+        }
+        if (last.matches("\\d+(\\.\\d+)?")) {
+            try {
+                return clampPct(Double.parseDouble(last));
+            } catch (NumberFormatException e) {
+                return null;
+            }
+        }
+        Double top = parseCpuPct(last);
+        return top != null ? top : parseVmstatCpu(last);
+    }
+
+    /** top 的 Cpu(s) 行 → 使用率百分比 */
     public static Double parseCpuPct(String line) {
         if (line == null) {
             return null;
@@ -78,9 +106,7 @@ public final class HostParsers {
                 } catch (NumberFormatException e) {
                     continue;
                 }
-                if (mount.equals("/dev") || mount.startsWith("/sys") || mount.startsWith("/run/user")
-                        || mount.startsWith("/dev/shm") || mount.startsWith("/run") || p[0].equals("tmpfs")
-                        || p[0].equals("devtmpfs") || p[0].equals("overlay") || mount.startsWith("/snap/")) {
+                if (ignoreFs(p[0], mount)) {
                     continue;
                 }
                 rows.add(R.map("mount", mount, "usedPct", pct, "device", p[0]));
@@ -88,6 +114,27 @@ public final class HostParsers {
             }
         }
         return new DfResult(rows, max);
+    }
+
+    /**
+     * 不计入容量的文件系统：内存盘、overlay、snap、loop 挂载的光盘镜像（/dvd 恒为 100%）、容器运行时挂载。
+     * 这些不是数据库主机的数据盘，算进 host_fs_used_pct_max 会把健康分和磁盘告警打成 100%。
+     */
+    static boolean ignoreFs(String device, String mount) {
+        String d = device == null ? "" : device.toLowerCase(java.util.Locale.ROOT);
+        String m = mount == null ? "" : mount;
+        if (m.equals("/dev") || m.startsWith("/dev/") || m.startsWith("/sys") || m.startsWith("/proc")
+                || m.startsWith("/run") || m.equals("/snap") || m.startsWith("/snap/")
+                || m.equals("/dvd") || m.startsWith("/dvd/") || m.equals("/cdrom") || m.startsWith("/cdrom/")
+                || m.equals("/media") || m.startsWith("/media/")) {
+            return true;
+        }
+        return d.equals("tmpfs") || d.equals("devtmpfs") || d.equals("overlay") || d.equals("squashfs")
+                || d.equals("iso9660") || d.equals("udf") || d.equals("ramfs") || d.equals("autofs")
+                || d.equals("nsfs") || d.equals("tracefs") || d.equals("cgroup") || d.equals("cgroup2")
+                || d.equals("configfs") || d.equals("debugfs") || d.equals("securityfs") || d.equals("pstore")
+                || d.equals("bpf") || d.equals("hugetlbfs") || d.equals("mqueue") || d.equals("fusectl")
+                || d.startsWith("/dev/loop") || d.startsWith("loop");
     }
 
     /** free -m 的 Mem 行 "total used free" → 使用率 */

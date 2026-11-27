@@ -225,8 +225,10 @@ onMounted(() => {
   }
   clearSession()
   auth.$patch({ token: '', user: null })
-  loadLicense()
-  loadSso()
+  // 授权未通过时不要再请求 SSO 配置：该接口会被 4031 拦截，拦截器又会把登录页整页刷一遍
+  loadLicense().then(() => {
+    if (!lic.value || lic.value.loginAllowed) loadSso()
+  })
   nextTick(() => (form.username ? pwdRef.value : userRef.value)?.focus())
 })
 </script>

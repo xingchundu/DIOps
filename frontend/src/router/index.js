@@ -22,6 +22,7 @@ const router = createRouter({
         { path: 'cmdb/app-relation', name: 'AppDbRelation', component: () => import('@/views/cmdb/AppDbRelation.vue') },
         { path: 'cmdb/tags', name: 'TagManagement', component: () => import('@/views/cmdb/TagManagement.vue') },
         { path: 'automation', name: 'Automation', component: () => import('@/views/automation/AutomationCenter.vue') },
+        { path: 'db-inspect', name: 'DbInspect', component: () => import('@/views/dbinspect/DbInspectCenter.vue') },
         { path: 'service-catalog', name: 'ServiceCatalog', component: () => import('@/views/service/ServiceCatalog.vue') },
         { path: 'sql',       name: 'Sql',         component: () => import('@/views/sql/SqlOptimization.vue') },
         { path: 'sql-review', name: 'SQLReview', component: () => import('@/views/sql/SQLReview.vue') },

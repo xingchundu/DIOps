@@ -7,6 +7,8 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 ENV_FILE="$ROOT/backend/.env"
 touch "$ENV_FILE"
+# 末行无换行时 echo 追加会粘在上一行 KEY=value 后（曾导致 AI_OPS_HOST=127.0.0.1JWT_SECRET=...）
+[ -s "$ENV_FILE" ] && [ -n "$(tail -c 1 "$ENV_FILE")" ] && echo >>"$ENV_FILE"
 gen() { head -c 48 /dev/urandom | base64 | tr -d '\n/+=' | head -c 48; }
 weak() { case "$1" in ''|dbops_secret|dbops_platform_secret_2026|请换成*) return 0;; esac; [ "${#1}" -lt 16 ]; }
 for k in JWT_SECRET DBOPS_SECRET_KEY AI_INTERNAL_TOKEN; do

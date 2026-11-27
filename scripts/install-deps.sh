@@ -14,6 +14,8 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=python39-home.sh
+. "$ROOT/scripts/python39-home.sh"
 DEPS="$ROOT/deps"
 BUNDLE="$ROOT/offline-bundle"
 NODE_VERSION="${NODE_VERSION:-18.20.8}"
@@ -193,7 +195,7 @@ try_install_system_python39() {
 
 python39_bin() {
   local c bin ver
-  for c in "$DEPS/python/bin/python3.9" "$DEPS/python/bin/python3" python3.9; do
+  for c in "$DIOPS_PYTHON_HOME/bin/python3.9" "$DEPS/python/bin/python3.9" "$DEPS/python/bin/python3" python3.9; do
     if [ -x "$c" ]; then
       bin="$c"
     elif command -v "$c" >/dev/null 2>&1; then

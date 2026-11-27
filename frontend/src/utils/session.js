@@ -42,8 +42,11 @@ export function clearSession() {
  */
 export function redirectToLogin(reason = 'expired') {
   if (redirecting) return
-  redirecting = true
   clearSession()
+  // 已经在登录页时再整页跳转会形成刷新循环：登录页请求被授权拦截 → 再跳回登录页
+  const path = window.location.pathname || ''
+  if (path === '/login' || path.startsWith('/login/')) return
+  redirecting = true
   const here = window.location.pathname + window.location.search
   const q = new URLSearchParams()
   if (reason) q.set('reason', reason)

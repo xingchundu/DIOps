@@ -104,12 +104,44 @@ class HealthScorerTest {
     }
 
     @Test
+    void activeSessionsCountedFromVsessionOn102() {
+        assertEquals(3L, ExporterCollector.activeUserSessions(List.of(
+                Map.of("STATUS", "ACTIVE", "CNT", 3),
+                Map.of("STATUS", "INACTIVE", "CNT", 40))));
+        assertEquals(0L, ExporterCollector.activeUserSessions(List.of(Map.of("STATUS", "INACTIVE", "CNT", 8))));
+        assertEquals(0L, ExporterCollector.activeUserSessions(null));
+    }
+
+    @Test
+    void cpuPrefersDatabaseHostOverSshHost() {
+        HealthScorer.Score s = score("ORACLE", metrics("Host CPU Utilization (%)", 8.2), null, keyed("host_cpu_used_pct", 56.8));
+        @SuppressWarnings("unchecked")
+        Map<String, Object> k = (Map<String, Object>) s.dimensions().get("keyMetrics");
+        assertEquals(8.2, k.get("cpu"));
+        HealthScorer.Score pw = score("PANWEI", null, keyed("panwei_host_cpu_pct", 6.5), keyed("host_cpu_used_pct", 55.2));
+        @SuppressWarnings("unchecked")
+        Map<String, Object> pk = (Map<String, Object>) pw.dimensions().get("keyMetrics");
+        assertEquals(6.5, pk.get("cpu"));
+    }
+
+    @Test
     void trendPrefersHostCpuAndOraclePercent() {
         List<Map<String, Object>> m = metrics("Host CPU Usage Per Sec", 350, "Host CPU Utilization (%)", 12.5, "Current Logons Count", 80);
         Double[] t = HealthScorer.trend("ORACLE", m, null);
         assertEquals(12.5, t[0]);
         assertEquals(80.0, t[1]);
-        assertEquals(40.0, HealthScorer.trend("ORACLE", m, 40.0)[0]);
+        // 库内主机 CPU 已有时，不用 SSH 关联主机（可能是监控机）的采样覆盖
+        assertEquals(12.5, HealthScorer.trend("ORACLE", m, 40.0)[0]);
+        assertEquals(40.0, HealthScorer.trend("ORACLE", metrics("Current Logons Count", 80), 40.0)[0]);
         assertNull(HealthScorer.trend("POSTGRESQL", metrics("pg_stat_database_numbackends", 0), null)[0]);
+    }
+
+    @Test
+    void panweiTrendUsesAllSessionsAndDatabaseCpu() {
+        List<Map<String, Object>> m = metrics("pg_stat_database_numbackends", 1, "pg_stat_activity_active", 4, "pg_stat_activity_total", 11);
+        Double[] idle = HealthScorer.trend("PANWEI", m, null);
+        assertNull(idle[0]);
+        assertEquals(11.0, idle[1]);
+        assertEquals(1.7, HealthScorer.trend("PANWEI", m, 1.7)[0]);
     }
 }

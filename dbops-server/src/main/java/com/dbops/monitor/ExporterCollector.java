@@ -89,7 +89,83 @@ public class ExporterCollector {
                 Metrics.addExporter(metrics, name, r.get("VALUE"), Values.str(r.get("METRIC_UNIT"), ""));
             }
         }
+        if (!seen.containsKey("Host CPU Utilization (%)")) {
+            Double os = oracleHostCpuFromOsstat(t);
+            if (os != null) {
+                Metrics.addExporter(metrics, "Host CPU Utilization (%)", os, "%");
+            }
+        }
         sessions.addAll(t.query("SELECT STATUS, COUNT(*) CNT FROM V$SESSION WHERE TYPE='USER' GROUP BY STATUS"));
+        if (!seen.containsKey("Active Sessions")) {
+            // 10.2 的 V$SYSMETRIC 没有 Active Sessions（11g 起才有这项）。V$SESSION.STATUS 从 10.2 起可用。
+            Metrics.addExporter(metrics, "Active Sessions", activeUserSessions(sessions), "");
+        }
+    }
+
+    /** 用户会话里 STATUS=ACTIVE 的个数。没有活跃会话时返回 0，避免监控中心显示成空。 */
+    static long activeUserSessions(List<Map<String, Object>> sessions) {
+        long active = 0;
+        if (sessions == null) {
+            return 0;
+        }
+        for (Map<String, Object> row : sessions) {
+            if ("ACTIVE".equalsIgnoreCase(Values.str(row.get("STATUS"), ""))) {
+                active += Values.toLong(row.get("CNT"), 0);
+            }
+        }
+        return active;
+    }
+
+    /**
+     * V$SYSMETRIC 没有主机 CPU 时，用 V$OSSTAT 的 BUSY/IDLE 做 1 秒差值。
+     * 这是数据库所在主机的 CPU，不依赖 SSH。视图不可读时不产出指标。
+     */
+    private Double oracleHostCpuFromOsstat(TargetDb t) {
+        double[] a = oracleOsTimes(t);
+        if (a == null) {
+            return null;
+        }
+        try {
+            Thread.sleep(1000);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return null;
+        }
+        double[] b = oracleOsTimes(t);
+        if (b == null) {
+            return null;
+        }
+        double busy = b[0] - a[0];
+        double idle = b[1] - a[1];
+        double total = busy + idle;
+        if (total <= 0) {
+            return null;
+        }
+        return Math.min(100, Metrics.round2(busy / total * 100));
+    }
+
+    /** @return [busy, idle]，缺任一项返回 null */
+    private static double[] oracleOsTimes(TargetDb t) {
+        List<Map<String, Object>> rows = t.queryQuietly(
+                "SELECT STAT_NAME, VALUE FROM V$OSSTAT WHERE STAT_NAME IN ('BUSY_TIME','IDLE_TIME')");
+        if (rows == null || rows.isEmpty()) {
+            return null;
+        }
+        Double busy = null;
+        Double idle = null;
+        for (Map<String, Object> row : rows) {
+            String name = Values.str(row.get("STAT_NAME"));
+            Double value = Values.toDouble(row.get("VALUE"));
+            if (name == null || value == null) {
+                continue;
+            }
+            if ("BUSY_TIME".equalsIgnoreCase(name)) {
+                busy = value;
+            } else if ("IDLE_TIME".equalsIgnoreCase(name)) {
+                idle = value;
+            }
+        }
+        return busy == null || idle == null ? null : new double[]{busy, idle};
     }
 
     /**
@@ -213,6 +289,13 @@ public class ExporterCollector {
         long a = z == null ? 0 : Values.toLong(z.get("A"), 0);
         long i = z == null ? 0 : Values.toLong(z.get("I"), 0);
         Metrics.addExporter(metrics, "pg_stat_activity_active", a, "");
+        if (DbType.PANWEI.equals(t.dbType())) {
+            // numbackends 只统计当前连接的那个库。历史趋势要的是实例上的全部会话。
+            Map<String, Object> all = t.oneQuietly("SELECT COUNT(*)::int AS c FROM pg_stat_activity");
+            if (all != null) {
+                Metrics.addExporter(metrics, "pg_stat_activity_total", all.get("C"), "");
+            }
+        }
         sessions.add(R.map("STATUS", "ACTIVE", "CNT", a));
         sessions.add(R.map("STATUS", "INACTIVE", "CNT", i));
     }
@@ -493,6 +576,42 @@ public class ExporterCollector {
         return out;
     }
 
+    /**
+     * 磐维表空间。spcmaxsize 是文本、单位字节；空或非正数表示未设上限。
+     * 原先把 pg_database 的库大小同时写入已用和上限，使用率恒为 100%。
+     */
+    static final String PANWEI_TABLESPACE_SQL = "SELECT t.spcname AS TABLESPACE_NAME, "
+            + "CASE WHEN btrim(COALESCE(t.spcmaxsize, '')) ~ '^[0-9]+$' AND btrim(t.spcmaxsize)::numeric > 0 "
+            + "THEN ROUND(btrim(t.spcmaxsize)::numeric / 1024 / 1024 / 1024, 2) ELSE NULL END AS TOTAL_GB, "
+            + "ROUND(pg_tablespace_size(t.oid) / 1024.0 / 1024 / 1024, 2) AS USED_GB, "
+            + "CASE WHEN btrim(COALESCE(t.spcmaxsize, '')) ~ '^[0-9]+$' AND btrim(t.spcmaxsize)::numeric > 0 "
+            + "THEN GREATEST(ROUND((btrim(t.spcmaxsize)::numeric - pg_tablespace_size(t.oid)) / 1024 / 1024 / 1024, 2), 0) "
+            + "ELSE NULL END AS FREE_GB, "
+            + "CASE WHEN btrim(COALESCE(t.spcmaxsize, '')) ~ '^[0-9]+$' AND btrim(t.spcmaxsize)::numeric > 0 "
+            + "THEN ROUND(pg_tablespace_size(t.oid) * 100.0 / btrim(t.spcmaxsize)::numeric, 2) ELSE NULL END AS USED_PCT, "
+            + "'PERMANENT' AS CONTENTS, 'ONLINE' AS STATUS "
+            + "FROM pg_tablespace t ORDER BY pg_tablespace_size(t.oid) DESC";
+
+    /** 旧版本没有 spcmaxsize 列时只给出已用，使用率留空 */
+    static final String PANWEI_TABLESPACE_USED_SQL = "SELECT t.spcname AS TABLESPACE_NAME, "
+            + "CAST(NULL AS numeric) AS TOTAL_GB, "
+            + "ROUND(pg_tablespace_size(t.oid) / 1024.0 / 1024 / 1024, 2) AS USED_GB, "
+            + "CAST(NULL AS numeric) AS FREE_GB, CAST(NULL AS numeric) AS USED_PCT, "
+            + "'PERMANENT' AS CONTENTS, 'ONLINE' AS STATUS "
+            + "FROM pg_tablespace t ORDER BY pg_tablespace_size(t.oid) DESC";
+
+    private List<Map<String, Object>> panweiTablespaces(TargetDb t) throws SQLException {
+        List<Map<String, Object>> r = t.queryQuietly(PANWEI_TABLESPACE_SQL);
+        if (r != null && !r.isEmpty()) {
+            return r;
+        }
+        r = t.queryQuietly(PANWEI_TABLESPACE_USED_SQL);
+        if (r != null && !r.isEmpty()) {
+            return r;
+        }
+        throw new SQLException("无法读取磐维表空间：请确认被管账号可查询 pg_tablespace，并允许执行 pg_tablespace_size");
+    }
+
     public List<Map<String, Object>> tablespaces(long instanceId) throws SQLException {
         CmdbInstance inst = connector.fetch(instanceId);
         try (TargetDb t = connector.open(inst)) {
@@ -512,11 +631,14 @@ public class ExporterCollector {
                         + "WHERE table_schema NOT IN ('information_schema','mysql','performance_schema','sys') "
                         + "GROUP BY table_schema ORDER BY USED_GB DESC");
             }
-            case DbType.POSTGRESQL, DbType.PANWEI -> {
+            case DbType.POSTGRESQL -> {
                 return t.query("SELECT d.datname AS TABLESPACE_NAME, ROUND(pg_database_size(d.oid)/1024/1024/1024.0, 2) AS TOTAL_GB, "
                         + "ROUND(pg_database_size(d.oid)/1024/1024/1024.0, 2) AS USED_GB, 0 AS FREE_GB, 100 AS USED_PCT, "
                         + "'DATABASE' AS CONTENTS, CASE WHEN datallowconn THEN 'ONLINE' ELSE 'OFFLINE' END AS STATUS "
                         + "FROM pg_database d WHERE datname NOT IN ('template0','template1') ORDER BY pg_database_size(d.oid) DESC");
+            }
+            case DbType.PANWEI -> {
+                return panweiTablespaces(t);
             }
             case DbType.DAMENG -> {
                 List<Map<String, Object>> r = t.queryQuietly("SELECT ts.NAME AS TABLESPACE_NAME, "
@@ -574,27 +696,11 @@ public class ExporterCollector {
                     sql.append(" ORDER BY TIME DESC LIMIT 200");
                     return withSerial(t.query(sql.toString(), args.toArray()), "");
                 }
-                case DbType.POSTGRESQL, DbType.PANWEI -> {
-                    StringBuilder sql = new StringBuilder("SELECT pid AS SID, 0 AS SERIAL_NUM, usename AS USERNAME, host(client_addr) AS MACHINE, "
-                            + "application_name AS PROGRAM, state AS STATUS, "
-                            + "COALESCE(EXTRACT(epoch FROM (now() - state_change))::int, 0) AS LAST_CALL_ET, "
-                            + "wait_event_type AS WAIT_CLASS, wait_event AS EVENT, "
-                            + "ROUND((EXTRACT(epoch FROM (now() - state_change))/60.0)::numeric, 1) AS WAIT_MIN, "
-                            + "LEFT(query, 4000) AS SQL_TEXT FROM pg_stat_activity WHERE pid <> pg_backend_pid()");
-                    List<Object> args = new ArrayList<>();
-                    if (onlyActive) {
-                        sql.append(" AND state = 'active'");
-                    }
-                    if (!st.isEmpty()) {
-                        sql.append(" AND state = ?");
-                        args.add(st);
-                    }
-                    if (!safeUser.isEmpty()) {
-                        sql.append(" AND usename ILIKE ?");
-                        args.add("%" + safeUser + "%");
-                    }
-                    sql.append(" ORDER BY state_change DESC NULLS LAST LIMIT 200");
-                    return withSerial(t.query(sql.toString(), args.toArray()), 0);
+                case DbType.POSTGRESQL -> {
+                    return pgSessions(t, false, onlyActive, st, safeUser);
+                }
+                case DbType.PANWEI -> {
+                    return pgSessions(t, true, onlyActive, st, safeUser);
                 }
                 case DbType.DAMENG -> {
                     List<Map<String, Object>> r = t.queryQuietly("SELECT SESS_ID AS SID, SESS_SEQ AS SERIAL_NUM, USER_NAME AS USERNAME, "
@@ -637,6 +743,55 @@ public class ExporterCollector {
                 default -> throw new SQLException("不支持的数据库类型: " + inst.dbType());
             }
         }
+    }
+
+    /** PostgreSQL 10+：有 wait_event。磐维多数版本没有这两列，也没有 host(inet)。 */
+    static final String PG_SESSION_SQL = "SELECT pid AS SID, 0 AS SERIAL_NUM, usename AS USERNAME, host(client_addr) AS MACHINE, "
+            + "application_name AS PROGRAM, state AS STATUS, "
+            + "COALESCE(EXTRACT(epoch FROM (now() - state_change))::int, 0) AS LAST_CALL_ET, "
+            + "wait_event_type AS WAIT_CLASS, wait_event AS EVENT, "
+            + "ROUND((EXTRACT(epoch FROM (now() - state_change))/60.0)::numeric, 1) AS WAIT_MIN, "
+            + "LEFT(query, 4000) AS SQL_TEXT FROM pg_stat_activity WHERE pid <> pg_backend_pid()";
+
+    /** 只用磐维 pg_stat_activity 上已经存在的列：pid、usename、client_addr、state、state_change、query */
+    static final String PANWEI_SESSION_SQL = "SELECT pid AS SID, 0 AS SERIAL_NUM, usename AS USERNAME, CAST(client_addr AS text) AS MACHINE, "
+            + "application_name AS PROGRAM, state AS STATUS, "
+            + "COALESCE(CAST(EXTRACT(epoch FROM (now() - state_change)) AS int), 0) AS LAST_CALL_ET, "
+            + "CAST('' AS text) AS WAIT_CLASS, CAST('' AS text) AS EVENT, "
+            + "ROUND(CAST(EXTRACT(epoch FROM (now() - state_change)) / 60.0 AS numeric), 1) AS WAIT_MIN, "
+            + "LEFT(query, 4000) AS SQL_TEXT FROM pg_stat_activity WHERE pid <> pg_backend_pid()";
+
+    private List<Map<String, Object>> pgSessions(TargetDb t, boolean panwei, boolean onlyActive, String status, String user) throws SQLException {
+        List<Object> args = new ArrayList<>();
+        String tail = pgSessionTail(onlyActive, status, user, args);
+        if (panwei) {
+            return withSerial(t.query(PANWEI_SESSION_SQL + tail, args.toArray()), 0);
+        }
+        try {
+            return withSerial(t.query(PG_SESSION_SQL + tail, args.toArray()), 0);
+        } catch (SQLException first) {
+            if (!t.connection().getAutoCommit()) {
+                t.connection().rollback();
+            }
+            return withSerial(t.query(PANWEI_SESSION_SQL + tail, args.toArray()), 0);
+        }
+    }
+
+    private static String pgSessionTail(boolean onlyActive, String status, String user, List<Object> args) {
+        StringBuilder sql = new StringBuilder();
+        if (onlyActive) {
+            sql.append(" AND state = 'active'");
+        }
+        if (status != null && !status.isEmpty()) {
+            sql.append(" AND state = ?");
+            args.add(status);
+        }
+        if (user != null && !user.isEmpty()) {
+            sql.append(" AND usename ILIKE ?");
+            args.add("%" + user + "%");
+        }
+        sql.append(" ORDER BY state_change DESC NULLS LAST LIMIT 200");
+        return sql.toString();
     }
 
     private static List<Map<String, Object>> oracleSessions(TargetDb t, boolean onlyActive, String status, String user) throws SQLException {

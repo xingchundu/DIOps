@@ -30,6 +30,32 @@ class StatsSourceTest {
     }
 
     @Test
+    void panweiSpillAndScanColumnsAreOptional() {
+        Set<String> base = Set.of("UNIQUE_SQL_ID", "USER_ID", "QUERY", "USER_NAME", "N_CALLS", "TOTAL_ELAPSE_TIME", "N_RETURNED_ROWS");
+        StatsSource.Probe bare = StatsSource.resolve(StatsSource.panwei(1000), base);
+        assertTrue(bare.ok());
+        assertFalse(bare.supports(Counter.ROWS_EXAMINED));
+        assertFalse(bare.supports(Counter.TMP_DISK));
+
+        StatsSource.Probe full = StatsSource.resolve(StatsSource.panwei(1000), union(base,
+                "N_TUPLES_FETCHED", "N_TUPLES_RETURNED", "SORT_SPILL_SIZE", "HASH_SPILL_SIZE"));
+        assertTrue(full.supports(Counter.ROWS_EXAMINED));
+        assertEquals("N_TUPLES_FETCHED + N_TUPLES_RETURNED", full.counters().get(Counter.ROWS_EXAMINED).expr());
+        assertTrue(full.supports(Counter.TMP_DISK));
+        assertEquals("SORT_SPILL_SIZE + HASH_SPILL_SIZE", full.counters().get(Counter.TMP_DISK).expr());
+
+        StatsSource.Probe old = StatsSource.resolve(StatsSource.panwei(1000), union(base, "N_TUPLES_FETCHED", "SORT_SPILLED_COUNT"));
+        assertEquals("N_TUPLES_FETCHED", old.counters().get(Counter.ROWS_EXAMINED).expr());
+        assertEquals("SORT_SPILLED_COUNT", old.counters().get(Counter.TMP_DISK).expr());
+    }
+
+    private static Set<String> union(Set<String> base, String... more) {
+        java.util.HashSet<String> s = new java.util.HashSet<>(base);
+        s.addAll(java.util.List.of(more));
+        return s;
+    }
+
+    @Test
     void missingCoreColumnsFailProbe() {
         StatsSource.Probe p = StatsSource.resolve(StatsSource.dameng(1), Set.of("SQL_ID", "SQL_TEXT"));
         assertFalse(p.ok());

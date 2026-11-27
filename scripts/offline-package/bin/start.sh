@@ -6,13 +6,24 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 mkdir -p logs
 
-if [ ! -f certs/server.crt ] || [ ! -x modules/sql-optimizer/venv/bin/python ]; then
-  echo "[ERROR] 请先执行 ./bin/install.sh"
+if [ ! -f config/backend.env ]; then
+  echo "[ERROR] 缺少 config/backend.env（请先编辑数据库连接等信息）"
   exit 1
 fi
-if [ ! -f config/backend.env ]; then
-  echo "[ERROR] 缺少 config/backend.env"
-  exit 1
+
+needs_install() {
+  [ ! -f certs/server.crt ] || [ ! -f certs/server.key ] || \
+    [ ! -x modules/sql-optimizer/venv/bin/python ] || \
+    [ ! -x modules/ai-ops/venv/bin/python ]
+}
+
+if needs_install; then
+  echo "[INFO] 首次启动或未执行安装：自动运行 ./bin/install.sh ..."
+  if ! bash "$ROOT/bin/install.sh"; then
+    echo "[ERROR] install.sh 失败，请根据上方报错修复后重试 ./bin/start.sh"
+    exit 1
+  fi
+  echo
 fi
 
 cp -f config/backend.env backend/.env
@@ -24,6 +35,20 @@ set -a
 # shellcheck disable=SC1091
 source "$ROOT/config/backend.env"
 set +a
+
+secret_key_weak() {
+  local v="${1:-}"
+  [ -z "$v" ] && return 0
+  case "$v" in *请换*|dbops_secret|dbops_platform_secret_2026) return 0 ;; esac
+  [ "${#v}" -lt 16 ]
+}
+if secret_key_weak "${DBOPS_SECRET_KEY:-}"; then
+  echo "[ERROR] 未配置 DBOPS_SECRET_KEY，Java 无法解密 CMDB 里的数据库密码。"
+  echo "        SQL 采集会报「凭据已加密，但未配置 DBOPS_SECRET_KEY」。监控和 Oracle 深度诊断同样连不上。"
+  echo "        从原应用服务器的 config/backend.env 复制 DBOPS_SECRET_KEY=... 到本机同一文件，然后重新 ./bin/start.sh"
+  echo "        全新空库可执行 ./bin/install.sh 生成；已有加密密码时禁止新生成。"
+  exit 1
+fi
 
 export PATH="$ROOT/runtime/node/bin:$PATH"
 JAVA_PORT="${JAVA_PORT:-3000}"

@@ -58,7 +58,19 @@ async function oraclePerformance(conn) {
       { outFormat: oracledb.OUT_FORMAT_OBJECT }
     ),
   ]);
-  return { metrics: m.rows || [], sessions: sess.rows || [] };
+  const metrics = m.rows || [];
+  const sessions = sess.rows || [];
+  // 10.2 的 V$SYSMETRIC 没有 Active Sessions，用 V$SESSION 的 ACTIVE 计数补上
+  const hasActive = metrics.some((r) => String(r.METRIC_NAME || r.metric_name || '').toLowerCase() === 'active sessions');
+  if (!hasActive) {
+    let active = 0;
+    for (const row of sessions) {
+      const st = String(row.STATUS || row.status || '');
+      if (st.toUpperCase() === 'ACTIVE') active += Number(row.CNT ?? row.cnt) || 0;
+    }
+    metrics.push({ METRIC_NAME: 'Active Sessions', VALUE: active, METRIC_UNIT: '' });
+  }
+  return { metrics, sessions };
 }
 
 async function mysqlPerformance(conn) {
@@ -665,6 +677,42 @@ async function mysqlTablespaces(conn) {
   return rowsUpper(rows);
 }
 
+const PANWEI_TABLESPACE_SQL = `
+    SELECT t.spcname AS TABLESPACE_NAME,
+           CASE WHEN btrim(COALESCE(t.spcmaxsize, '')) ~ '^[0-9]+$' AND btrim(t.spcmaxsize)::numeric > 0
+                THEN ROUND(btrim(t.spcmaxsize)::numeric / 1024 / 1024 / 1024, 2) ELSE NULL END AS TOTAL_GB,
+           ROUND(pg_tablespace_size(t.oid) / 1024.0 / 1024 / 1024, 2) AS USED_GB,
+           CASE WHEN btrim(COALESCE(t.spcmaxsize, '')) ~ '^[0-9]+$' AND btrim(t.spcmaxsize)::numeric > 0
+                THEN GREATEST(ROUND((btrim(t.spcmaxsize)::numeric - pg_tablespace_size(t.oid)) / 1024 / 1024 / 1024, 2), 0)
+                ELSE NULL END AS FREE_GB,
+           CASE WHEN btrim(COALESCE(t.spcmaxsize, '')) ~ '^[0-9]+$' AND btrim(t.spcmaxsize)::numeric > 0
+                THEN ROUND(pg_tablespace_size(t.oid) * 100.0 / btrim(t.spcmaxsize)::numeric, 2) ELSE NULL END AS USED_PCT,
+           'PERMANENT' AS CONTENTS,
+           'ONLINE' AS STATUS
+    FROM pg_tablespace t
+    ORDER BY pg_tablespace_size(t.oid) DESC`;
+
+const PANWEI_TABLESPACE_USED_SQL = `
+    SELECT t.spcname AS TABLESPACE_NAME,
+           NULL::numeric AS TOTAL_GB,
+           ROUND(pg_tablespace_size(t.oid) / 1024.0 / 1024 / 1024, 2) AS USED_GB,
+           NULL::numeric AS FREE_GB,
+           NULL::numeric AS USED_PCT,
+           'PERMANENT' AS CONTENTS,
+           'ONLINE' AS STATUS
+    FROM pg_tablespace t
+    ORDER BY pg_tablespace_size(t.oid) DESC`;
+
+/** 磐维按表空间和 MAXSIZE（字节）计算使用率。未设上限时使用率为空，不再把库大小打成 100%。 */
+async function panweiTablespaces(client) {
+  try {
+    const r = await client.query(PANWEI_TABLESPACE_SQL);
+    if (r.rows?.length) return rowsUpper(r.rows);
+  } catch { /* 旧版本没有 spcmaxsize */ }
+  const r = await client.query(PANWEI_TABLESPACE_USED_SQL);
+  return rowsUpper(r.rows);
+}
+
 async function pgTablespaces(client) {
   const r = await client.query(`
     SELECT d.datname AS TABLESPACE_NAME,
@@ -697,6 +745,14 @@ async function getTablespaces(instanceId) {
       return await mysqlTablespaces(conn);
     } finally {
       await conn.end();
+    }
+  }
+  if (t === 'PANWEI') {
+    const client = await connectPostgres(inst);
+    try {
+      return await panweiTablespaces(client);
+    } finally {
+      await client.end();
     }
   }
   if (isPgFamily(t)) {
@@ -776,14 +832,8 @@ async function mysqlSessions(conn, { onlyActive, status, username }) {
   return rowsUpper(rows).map((r) => ({ ...r, 'SERIAL#': r.SERIAL_NUM ?? '' }));
 }
 
-async function pgSessions(client, { onlyActive, status, username }) {
-  let sql = `SELECT pid AS SID, 0 AS SERIAL_NUM, usename AS USERNAME, host(client_addr) AS MACHINE,
-                    application_name AS PROGRAM, state AS STATUS,
-                    COALESCE(EXTRACT(epoch FROM (now() - state_change))::int, 0) AS LAST_CALL_ET,
-                    wait_event_type AS WAIT_CLASS, wait_event AS EVENT,
-                    ROUND(EXTRACT(epoch FROM (now() - state_change))/60.0, 1) AS WAIT_MIN,
-                    LEFT(query, 4000) AS SQL_TEXT
-             FROM pg_stat_activity WHERE pid <> pg_backend_pid()`;
+function pgSessionTail(onlyActive, status, username) {
+  let sql = '';
   const params = [];
   let n = 1;
   if (onlyActive) sql += ` AND state = 'active'`;
@@ -796,7 +846,35 @@ async function pgSessions(client, { onlyActive, status, username }) {
     params.push(`%${username}%`);
   }
   sql += ` ORDER BY state_change DESC NULLS LAST LIMIT 200`;
-  const r = await client.query(sql, params);
+  return { sql, params };
+}
+
+async function pgSessions(client, { onlyActive, status, username, panwei }) {
+  const tail = pgSessionTail(onlyActive, status, username);
+  const modern = `SELECT pid AS SID, 0 AS SERIAL_NUM, usename AS USERNAME, host(client_addr) AS MACHINE,
+                    application_name AS PROGRAM, state AS STATUS,
+                    COALESCE(EXTRACT(epoch FROM (now() - state_change))::int, 0) AS LAST_CALL_ET,
+                    wait_event_type AS WAIT_CLASS, wait_event AS EVENT,
+                    ROUND(EXTRACT(epoch FROM (now() - state_change))/60.0, 1) AS WAIT_MIN,
+                    LEFT(query, 4000) AS SQL_TEXT
+             FROM pg_stat_activity WHERE pid <> pg_backend_pid()`;
+  const panweiSql = `SELECT pid AS SID, 0 AS SERIAL_NUM, usename AS USERNAME, CAST(client_addr AS text) AS MACHINE,
+                    application_name AS PROGRAM, state AS STATUS,
+                    COALESCE(CAST(EXTRACT(epoch FROM (now() - state_change)) AS int), 0) AS LAST_CALL_ET,
+                    CAST('' AS text) AS WAIT_CLASS, CAST('' AS text) AS EVENT,
+                    ROUND(CAST(EXTRACT(epoch FROM (now() - state_change)) / 60.0 AS numeric), 1) AS WAIT_MIN,
+                    LEFT(query, 4000) AS SQL_TEXT
+             FROM pg_stat_activity WHERE pid <> pg_backend_pid()`;
+  let r;
+  if (panwei) {
+    r = await client.query(panweiSql + tail.sql, tail.params);
+  } else {
+    try {
+      r = await client.query(modern + tail.sql, tail.params);
+    } catch {
+      r = await client.query(panweiSql + tail.sql, tail.params);
+    }
+  }
   return rowsUpper(r.rows).map((row) => ({ ...row, 'SERIAL#': row.SERIAL_NUM ?? 0 }));
 }
 
@@ -824,7 +902,7 @@ async function getSessions(instanceId, { onlyActive, status, username } = {}) {
   if (isPgFamily(t)) {
     const client = await connectPostgres(inst);
     try {
-      return await pgSessions(client, opts);
+      return await pgSessions(client, { ...opts, panwei: t === 'PANWEI' });
     } finally {
       await client.end();
     }

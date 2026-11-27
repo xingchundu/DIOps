@@ -76,11 +76,14 @@ public class SqlInsightScheduler {
         }
     }
     private final AtomicBoolean hourly = new AtomicBoolean(false);
+    private final com.dbops.sqlinsight.plan.RetestService retests;
+    private volatile boolean rollupSeeded = false;
 
     public SqlInsightScheduler(SqlCollectService collect, BaselineService baselines, AnomalyService anomalies, InstanceDirectory instances,
                                StatsRepo stats, SystemConfigService cfg, DbopsProperties props, SlowSqlService slowSql,
-                               com.dbops.license.LicenseService license) {
+                               com.dbops.license.LicenseService license, com.dbops.sqlinsight.plan.RetestService retests) {
         this.license = license;
+        this.retests = retests;
         this.collect = collect;
         this.slowSql = slowSql;
         this.baselines = baselines;
@@ -197,6 +200,21 @@ public class SqlInsightScheduler {
                 } catch (Exception e) {
                     log.warn("[sqlinsight] hourly inst={}: {}", i.id(), e.getMessage());
                 }
+            }
+            try {
+                // 小时汇总：首轮用分钟数据保留期回填，之后每小时刷新最近 3 小时
+                int statsDays = (int) cfg.getLong("sqlinsight.retention.stats_days", 35);
+                stats.rollupHours(rollupSeeded ? 3 : statsDays * 24);
+                rollupSeeded = true;
+                stats.purgeRollup((int) cfg.getLong("sqlinsight.retention.rollup_days", 400));
+            } catch (Exception e) {
+                log.warn("[sqlinsight] rollup: {}", e.getMessage());
+            }
+            try {
+                retests.syncTickets();
+                retests.autoFinish((int) cfg.getLong("sqlinsight.retest.auto_finish_hours", 72));
+            } catch (Exception e) {
+                log.warn("[sqlinsight] retest round: {}", e.getMessage());
             }
             int purged = stats.purge((int) cfg.getLong("sqlinsight.retention.stats_days", 35));
             try {

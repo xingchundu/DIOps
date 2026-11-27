@@ -195,6 +195,23 @@ async function getPoolStats() {
   };
 }
 
+/** INSERT RETURNING 的 NUMBER 出参（位置绑定 outBinds[0][0] 或命名绑定 outBinds.rid） */
+function pluckOutBind(result, name) {
+  const ob = result?.outBinds;
+  if (ob == null) return null;
+  let raw = name != null ? ob[name] : undefined;
+  if (raw == null && Array.isArray(ob) && ob.length) raw = ob[0];
+  if (raw == null) {
+    const k = Object.keys(ob).find((key) => ob[key] != null);
+    if (k) raw = ob[k];
+  }
+  if (raw == null) return null;
+  const v = Array.isArray(raw) ? raw[0] : raw;
+  if (v == null) return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
 module.exports = {
   initPool,
   applyPoolConfigFromSysConfig,
@@ -205,4 +222,5 @@ module.exports = {
   queryPage,
   toPageInt,
   getPoolStats,
+  pluckOutBind,
 };

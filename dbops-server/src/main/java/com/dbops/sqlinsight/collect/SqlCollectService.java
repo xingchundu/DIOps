@@ -252,6 +252,27 @@ public class SqlCollectService {
 
     // ------------------------------------------------------------------ 活动会话采样
 
+    /** 每次采样：所有带 SQL 的活动会话按 (资产, 等待事件) 累计；无等待事件记为 ON CPU。失败不影响后续规则判定 */
+    private void recordWaits(long instanceId, InstanceDirectory.Inst inst, List<ActiveSession> sessions) {
+        try {
+            Map<Long, Map<String, double[]>> byAsset = new HashMap<>();
+            for (ActiveSession s : sessions) {
+                if (s.sqlText() == null || s.sqlText().isBlank()) {
+                    continue;
+                }
+                String nid = s.nativeId() != null ? s.nativeId() : "TXT:" + Integer.toHexString(s.sqlText().hashCode());
+                long a = assets.resolveNative(instanceId, nid, inst.dbType(), s.schema(), s.sqlText()).assetId();
+                String ev = s.waitEvent() == null || s.waitEvent().isBlank() ? "ON CPU" : s.waitEvent().trim();
+                double[] acc = byAsset.computeIfAbsent(a, k -> new HashMap<>()).computeIfAbsent(ev, k -> new double[2]);
+                acc[0] += 1;
+                acc[1] += s.waitSec();
+            }
+            stats.saveWaits(instanceId, byAsset);
+        } catch (Exception e) {
+            log.debug("[sqlinsight] wait sample inst={}: {}", instanceId, e.getMessage());
+        }
+    }
+
     public Map<String, Object> sampleSessions(long instanceId) {
         InstanceDirectory.Inst inst = instances.get(instanceId);
         if (inst == null || !sampling.add(instanceId)) {
@@ -266,6 +287,7 @@ public class SqlCollectService {
                 problems.applySessions(inst, List.of(), false, "活动会话视图不可用：" + Values.truncate(e.getMessage(), 300));
                 return Map.of("error", Values.str(e.getMessage(), ""));
             }
+            recordWaits(instanceId, inst, sessions);
             Map<String, Integer> streak = sessionStreak.computeIfAbsent(instanceId, k -> new ConcurrentHashMap<>());
             List<RuntimeRuleEngine.SessionHit> hits = RuntimeRuleEngine.evaluateSessions(sessions,
                     s -> {

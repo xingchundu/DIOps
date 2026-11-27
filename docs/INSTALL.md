@@ -554,6 +554,105 @@ nginx -t && nginx -s reload
 
 不必把 8000/8001 暴露到公网；由 Node 后端鉴权后代理即可。
 
+### 6.5 版本升级注意事项（存量环境）
+
+离线客户包升级、源码/开发环境换版本，均适用本节。新装请从 **第 3～5 节**执行，本节**不要**在全新安装时重复做迁移。
+
+#### 升级前必做（备份）
+
+| 备份项 | 位置 | 丢失后果 |
+|--------|------|----------|
+| **`DBOPS_SECRET_KEY`** | `backend/.env` 或离线包 `config/backend.env` | 无法解密已保存的**被管库密码**、SSH 凭据；CMDB 实例显示离线或「凭据解密失败」，须在控制台**逐个重录密码**（不必删实例） |
+| **`JWT_SECRET`** | 同上 | 已登录 Token 失效，用户需重新登录 |
+| **`AI_INTERNAL_TOKEN`** | 同上 | Node 调用 Python Agent 可能 401，需与两份 `.env` 保持一致 |
+| **整份 `.env`** | 同上 | 建议直接复制备份文件，升级后只合并**新增配置项**，勿覆盖密钥 |
+
+> **禁止**：升级时用安装脚本自动生成的**新** `DBOPS_SECRET_KEY` / `JWT_SECRET` 覆盖生产旧值（除非已接受在 CMDB 中重录全部被管库与主机凭据）。  
+> `start-all.sh` / `bin/install.sh` 仅在密钥为空或过短时才会生成新值；升级前应保证三项密钥**已存在且足够长**。
+
+#### 升级步骤（推荐顺序）
+
+1. **停服务**：`./bin/stop.sh` 或 `./start-all.sh stop`（离线包 / 源码根目录）。
+2. **备份** `config/backend.env` / `backend/.env`（见上表）。
+3. **平台库增量 SQL**（由厂商按**当前版本 → 目标版本**提供脚本列表；离线安装包内**不含** `migration_*.sql`）  
+   - 在**原平台库**、**原平台用户**下执行，可重复执行的脚本一般带 `DI_EXEC_IGNORE` / 幂等设计。  
+   - 新装仅需 `init.sql`；旧库缺表时常见补跑示例（以厂商清单为准）：  
+     `migration_license.sql`、`migration_security_fixes.sql`、`migration_sql_insight.sql`、`migration_db_inspect.sql` 等。  
+   - 详见 [README.md](../README.md) 各版本说明、[LICENSE.md](./LICENSE.md)、[CODE_REVIEW_RESPONSE.md](./CODE_REVIEW_RESPONSE.md)。
+4. **替换程序**：用新版本离线包覆盖安装目录（或更新 `dbops-server.jar`、`frontend/dist`、`backend` 等），**不要用开发源码目录直接覆盖客户离线包**。
+5. **恢复配置**：将备份的 `DBOPS_SECRET_KEY`、`JWT_SECRET`、`AI_INTERNAL_TOKEN` 写回 `config/backend.env` / `backend/.env`；核对 `DB_HOST` / `DB_SID` / 密码未误改。
+6. **检查 `.env` 格式**：每行一个变量，例如 `AI_OPS_HOST=127.0.0.1` **单独一行**，勿与其它键拼在同一行（否则 AI 服务会启动失败）。
+7. **启动**：`./bin/start.sh` 或 `./start-all.sh start`；查看 `logs/dbops-java.log` 出现 `[DB] Oracle pool OK`。
+8. **验收**：`curl -k https://127.0.0.1:<HTTPS_PORT>/health`；登录验证；CMDB 抽查实例连通性；按需验证授权状态（见下）。
+
+#### 平台授权（License，v4.2+）
+
+| 事项 | 说明 |
+|------|------|
+| 绑定对象 | 授权绑定**平台库 DBID**（机器码），非应用服务器 IP；**只换应用、不换库**一般无需重签 |
+| 换平台库 | 机器码变化，须向供应商提供**新机器码**后重新签发 `.lic` |
+| 导入方式 | **登录页**可**未登录**导入（「导入授权」）；完整 JSON 或 `.lic` 文件，见 [LICENSE.md](./LICENSE.md) |
+| 授权表 | `SYS_LICENSE`（导入记录）、`SYS_LICENSE_STATE`（防时间回拨；校验值含 `DBOPS_SECRET_KEY`，**勿手工改时间或 MAC**） |
+| 导入失败 | 先排除「平台库不可用」；再核对机器码、签名、是否过期；一般不须先删 `SYS_LICENSE`，同 `licenseId` 可重复导入 |
+| 换应用服务器后登录页仍提示「时间被回拨」 | 见下方排查。同一平台库机器码不变，**不用重签**；重新导入授权也不会改写 `SYS_LICENSE_STATE` |
+
+#### 换应用服务器或升级后：登录页提示「时间被回拨」
+
+登录页「检测到系统时间被回拨，授权暂不可用」在换应用服务器时，多数不是平台库时间错了，而是新机器上的 `DBOPS_SECRET_KEY` 和 `SYS_LICENSE_STATE` 里的校验值对不上。
+
+搬服务器或升级之前：把旧服务器的 `config/backend.env` / `backend/.env` 原样拷过来，至少 `DBOPS_SECRET_KEY`、`JWT_SECRET`、`AI_INTERNAL_TOKEN` 与旧环境相同；启动日志应有 `[env] loaded … keys from …`，且路径是这份文件。不要删 `SYS_LICENSE`、`SYS_LICENSE_STATE`。
+
+出现红字后：
+
+1. 看 `logs/dbops-java.log`。有 `SYS_LICENSE_STATE 校验失败（记录被修改，或 DBOPS_SECRET_KEY 未加载/已更换）` 就是密钥问题，做第 2 步。没有这句、只有时间回拨，才做第 4 步。
+2. 核对密钥是否加载：
+
+```bash
+grep -E '^DBOPS_SECRET_KEY=' config/backend.env
+tr '\0' '\n' < /proc/$(pgrep -f dbops-server.jar | head -1)/environ | grep DBOPS_ENV_FILE
+```
+
+`DBOPS_SECRET_KEY` 必须与旧服务器完全一致，`DBOPS_ENV_FILE` 必须指向这份文件。改对后重启 Java，不用重新导入授权。
+
+3. 旧密钥已丢失：先用下面的 SQL 确认平台库时间正确，再 `DELETE FROM SYS_LICENSE_STATE;` 并重启。程序按当前密钥重写该行，已导入的 `SYS_LICENSE` 仍在。用旧密钥加密的被管库 / SSH 密码会解不开，到资产管理里重新保存密码，不要删实例。
+4. 区分是否真的回拨：
+
+```sql
+SELECT LAST_SEEN_MS,
+       TO_CHAR(
+         TIMESTAMP '1970-01-01 00:00:00 UTC'
+         + NUMTODSINTERVAL(LAST_SEEN_MS/1000, 'SECOND'),
+         'YYYY-MM-DD HH24:MI:SS'
+       ) AS LAST_SEEN_UTC,
+       TO_CHAR(SYS_EXTRACT_UTC(SYSTIMESTAMP), 'YYYY-MM-DD HH24:MI:SS') AS DB_UTC
+FROM SYS_LICENSE_STATE
+WHERE ID = 1;
+```
+
+`DB_UTC` 比 `LAST_SEEN_UTC` 早 1 小时以上，才是时间回拨。把平台库服务器时间改正确，等数据库时间超过 `LAST_SEEN_UTC` 后约 1 分钟提示消失。时间未追上前不要删这行。
+
+#### 升级后监控/CMDB 离线
+
+- 若出现 **`凭据解密失败（DBOPS_SECRET_KEY 与加密时不一致？）`**：恢复升级前的 `DBOPS_SECRET_KEY` 并重启；无法恢复则在 **CMDB → 实例管理** 编辑实例**重新保存数据库密码**（主机 SSH 同理）。
+- 演示/种子实例可停用或改正连接信息，不必保留错误账号（如历史种子中的笔误用户）。
+
+#### Java 网关（v4.0+）
+
+核心 API 与监控采集在 **Java `dbops-server`（默认 3000）**；升级须包含新 `dbops-server.jar`（或离线包 `app/`）。离线包不要只换 Node 而不换 Java。
+
+#### Python Agent（可选）
+
+SQL 优化（8000）、AI 分析（8001）需要 **CPython 3.9+**；离线包自带 `runtime/python`。升级后若 Agent 未起，执行 `bash scripts/install-deps.sh` 或离线包 `bin/install.sh` 重建 venv。
+
+#### 给客户/实施的检查清单
+
+- [ ] 升级前已备份 `config/backend.env` / `backend/.env`（含三项密钥）  
+- [ ] 已执行厂商提供的增量 SQL  
+- [ ] 升级后密钥与升级前**一致**（或已计划在 CMDB 重录凭据）  
+- [ ] `dbops-java` / 网关健康检查通过  
+- [ ] 授权仍为 `VALID` 或已在登录页重新导入  
+- [ ] 被管实例连通性正常  
+
 ---
 
 ## 7. 可选组件：Python Agent
@@ -624,6 +723,14 @@ python app.py
 **AI 分析 / RCA 报 Oracle 配置缺失**
 
 - 检查 `backend/ai-ops-agent/.env` 是否配置 `ORACLE_USER`、`ORACLE_PASSWORD`、`ORACLE_DSN`（见 **第 3.4 节**）。
+
+**升级后被管实例离线 / 凭据解密失败**
+
+- 见 **第 6.5 节**：升级时是否更换了 `DBOPS_SECRET_KEY`；恢复旧密钥或在 CMDB 中重录实例密码。
+
+**授权无法导入 / 登录页提示时间被回拨**
+
+- 见 **第 6.5 节**「换应用服务器或升级后」与 [LICENSE.md](./LICENSE.md)。同一平台库只换应用服务器时机器码不变，不用重签；红字多半是 `DBOPS_SECRET_KEY` 与 `SYS_LICENSE_STATE` 不一致。
 
 **被管实例连接失败（CMDB 纳管）**
 

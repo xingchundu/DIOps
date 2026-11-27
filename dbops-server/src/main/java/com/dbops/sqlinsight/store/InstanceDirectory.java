@@ -73,8 +73,8 @@ public class InstanceDirectory {
         if (System.currentTimeMillis() - loadedAt > 60_000) {
             reload();
         }
-        int count = Math.max(1, Values.toInt(System.getenv("SQLINSIGHT_SHARD_COUNT"), 1));
-        int index = Math.floorMod(Values.toInt(System.getenv("SQLINSIGHT_SHARD_INDEX"), 0), count);
+        int count = Math.max(1, Values.toInt(configured("SQLINSIGHT_SHARD_COUNT"), 1));
+        int index = Math.floorMod(Values.toInt(configured("SQLINSIGHT_SHARD_INDEX"), 0), count);
         List<Inst> out = new ArrayList<>();
         for (Inst i : cache.values()) {
             if (DbType.isMonitored(i.dbType()) && !"STOPPED".equalsIgnoreCase(i.status())
@@ -83,5 +83,14 @@ public class InstanceDirectory {
             }
         }
         return out;
+    }
+
+    /** .env 经 EnvFileLoader 进系统属性，不一定在进程环境变量里。 */
+    private static String configured(String key) {
+        String v = System.getenv(key);
+        if (v == null || v.isBlank()) {
+            v = System.getProperty(key);
+        }
+        return v == null || v.isBlank() ? null : v.trim();
     }
 }

@@ -174,8 +174,18 @@ public final class StatsSource {
         m.put(Counter.CPU_MS, List.of(Col.c("CPU_TIME", d)));
         m.put(Counter.LOGICAL_READS, List.of(Col.c("N_BLOCKS_FETCHED")));
         m.put(Counter.PHYSICAL_READS, List.of(Col.expr("N_BLOCKS_FETCHED - N_BLOCKS_HIT", 1, "N_BLOCKS_FETCHED", "N_BLOCKS_HIT")));
-        m.put(Counter.ROWS_EXAMINED, List.of(Col.expr("N_TUPLES_FETCHED + N_TUPLES_RETURNED", 1, "N_TUPLES_FETCHED", "N_TUPLES_RETURNED")));
+        m.put(Counter.ROWS_EXAMINED, List.of(
+                Col.expr("N_TUPLES_FETCHED + N_TUPLES_RETURNED", 1, "N_TUPLES_FETCHED", "N_TUPLES_RETURNED"),
+                Col.c("N_TUPLES_FETCHED"), Col.c("N_TUPLES_RETURNED")));
         m.put(Counter.ROWS_RETURNED, List.of(Col.c("N_RETURNED_ROWS")));
+        // 排序 / hash 落盘。旧文档写成 sort_spilled_count，现行字段是 sort_spill_size（KB）
+        m.put(Counter.TMP_DISK, List.of(
+                Col.expr("SORT_SPILL_SIZE + HASH_SPILL_SIZE", 1, "SORT_SPILL_SIZE", "HASH_SPILL_SIZE"),
+                Col.c("SORT_SPILL_SIZE"), Col.c("HASH_SPILL_SIZE"),
+                Col.expr("SORT_SPILL_COUNT + HASH_SPILL_COUNT", 1, "SORT_SPILL_COUNT", "HASH_SPILL_COUNT"),
+                Col.c("SORT_SPILL_COUNT"), Col.c("HASH_SPILL_COUNT"),
+                Col.expr("SORT_SPILLED_COUNT + HASH_SPILLED_COUNT", 1, "SORT_SPILLED_COUNT", "HASH_SPILLED_COUNT"),
+                Col.c("SORT_SPILLED_COUNT"), Col.c("HASH_SPILLED_COUNT")));
         return new Spec(DbType.PANWEI, "dbe_perf.statement", "dbe_perf.statement", List.of("UNIQUE_SQL_ID", "USER_ID"),
                 List.of("NODE_ID"), List.of(Col.c("QUERY")), List.of(Col.c("USER_NAME")), List.of(), m,
                 List.of(Filter.f("N_CALLS > 0", "N_CALLS")),

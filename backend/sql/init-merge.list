@@ -1,8 +1,13 @@
 # 新库 init.sql 待并入的增量脚本（按顺序执行内容追加）
-# 仅列「全量建库」可安全执行的脚本；upgrade/重命名类见 sql/migrations/
+# 仅列「全量建库」可安全执行的脚本；upgrade/重命名类见 EXCLUDE_WARN（merge-init-sql.py）
+# 打包前运行 scripts/merge-init-sql.sh；若 migration 含 CREATE TABLE 未出现在 init.sql 会失败
+migration_monitor_catalog.sql
+migration_monitor_catalog_phase2.sql
+migration_monitor_catalog_phase3.sql
 migration_license.sql
 migration_sql_insight.sql
 migration_platform_ops.sql
 migration_platform_ops_config_labels.sql
 migration_v5_kg_diag.sql
 migration_v6_tablespace_alert.sql
+migration_db_inspect.sql

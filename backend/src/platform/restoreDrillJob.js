@@ -67,9 +67,10 @@ function startRestoreDrillScheduler() {
     console.warn('[platform-restore-drill] invalid cron', expr);
     return;
   }
+  const { platformTz } = require('../utils/platformClock');
   cron.schedule(expr, () => {
     registerDueDrills().catch((e) => console.error('[platform-restore-drill]', e.message));
-  });
+  }, { timezone: platformTz() });
   started = true;
   isEnabled().then((on) => {
     console.log('[platform-restore-drill] 已启动 Cron:', expr, 'enabled=', on);

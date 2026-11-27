@@ -163,7 +163,7 @@ public final class HealthScorer {
         check(fs, checked, "session", "连接数", s.first("db_conn_used_pct", "panwei_conn_used_pct"), hi(80, 95),
                 v -> "连接数达到上限的 " + p(v), WARN_DEDUCT);
         check(fs, checked, "session", "阻塞", s.v("oracle_blocking_session_max_sec"), hi(60, 300), v -> "存在阻塞，最长 " + n(v) + " 秒", WARN_DEDUCT);
-        check(fs, checked, "session", "锁等待", s.v("panwei_lock_wait_count"), hi(5, 20), v -> n(v) + " 个会话在等锁", WARN_DEDUCT);
+        check(fs, checked, "session", "锁等待", s.v("panwei_lock_wait_count"), hi(1, 5), v -> n(v) + " 个会话在等锁", WARN_DEDUCT);
         check(fs, checked, "session", "空闲事务", s.v("panwei_idle_in_txn_over_5min"), hi(1, 5), v -> n(v) + " 个事务空闲超过 5 分钟未提交", WARN_DEDUCT);
         check(fs, checked, "session", "死锁", s.v("oracle_alert_ora_00060_24h"), v -> v > 0 ? Level.WARN : Level.OK,
                 v -> "近 24 小时死锁 " + n(v) + " 次", 5);
@@ -172,7 +172,7 @@ public final class HealthScorer {
         }
 
         // ---------------- 主机
-        check(fs, checked, "host", "CPU", s.first("host_cpu_used_pct", "Host CPU Utilization (%)"), hi(80, 95), v -> "CPU 使用率 " + p(v), WARN_DEDUCT);
+        check(fs, checked, "host", "CPU", instanceCpu(e, s), hi(80, 95), v -> "CPU 使用率 " + p(v), WARN_DEDUCT);
         check(fs, checked, "host", "内存", s.v("host_mem_used_pct"), hi(90, 97), v -> "内存使用率 " + p(v), WARN_DEDUCT);
 
         // ---------------- 数据保护
@@ -280,7 +280,7 @@ public final class HealthScorer {
 
     static Map<String, Object> keyMetrics(String e, String raw, Snapshot s) {
         Map<String, Object> m = new LinkedHashMap<>();
-        put(m, "cpu", s.first("host_cpu_used_pct", "Host CPU Utilization (%)"));
+        put(m, "cpu", instanceCpu(e, s));
         put(m, "mem", s.v("host_mem_used_pct"));
         put(m, "connPct", s.first("db_conn_used_pct", "panwei_conn_used_pct"));
         put(m, "conn", switch (e) {
@@ -329,16 +329,32 @@ public final class HealthScorer {
     }
 
     /**
+     * 实例 CPU：库自己统计的主机 CPU 优先。SSH 采到的是关联 CMDB 主机，
+     * 那台机器可以不是数据库所在主机（例如只能登录监控机），不能盖过库内指标。
+     */
+    static Double instanceCpu(String metricEngine, Snapshot s) {
+        Double reported = switch (metricEngine) {
+            case DbType.ORACLE, DbType.DAMENG -> s.v("Host CPU Utilization (%)");
+            case DbType.POSTGRESQL -> s.v("panwei_host_cpu_pct");
+            default -> null;
+        };
+        return reported != null ? reported : s.v("host_cpu_used_pct");
+    }
+
+    /**
      * 趋势图的 CPU / 连接数。
-     * 有 SSH 主机 CPU 时优先用主机 CPU；Oracle/达梦用 Host CPU Utilization (%)；MySQL/PG 用“运行中/连接”比例近似。
+     * Oracle/达梦有 Host CPU Utilization (%) 时用它；否则用传入的主机 CPU（库内采样或 SSH）。
+     * MySQL/PG 没有主机 CPU 时，才用“运行中/连接”比例近似。
      */
     public static Double[] trend(String engine, List<Map<String, Object>> metrics, Double hostCpuPct) {
         String e = DbType.metricEngine(engine);
         Double cpu = null;
         Double conn = null;
+        boolean fromDatabase = false;
         switch (e) {
             case DbType.ORACLE, DbType.DAMENG -> {
                 cpu = Metrics.exporterValue(metrics, "Host CPU Utilization (%)");
+                fromDatabase = cpu != null;
                 conn = firstNonNull(Metrics.exporterValue(metrics, "Current Logons Count"), Metrics.exporterValue(metrics, "Active Sessions"));
             }
             case DbType.MYSQL -> {
@@ -349,10 +365,16 @@ public final class HealthScorer {
                 }
             }
             case DbType.POSTGRESQL -> {
-                conn = Metrics.exporterValue(metrics, "pg_stat_database_numbackends");
-                Double active = Metrics.exporterValue(metrics, "pg_stat_activity_active");
-                if (conn != null && conn > 0 && active != null) {
-                    cpu = Math.min(100, Metrics.round2(active / conn * 100));
+                if (DbType.PANWEI.equals(DbType.normalize(engine))) {
+                    // 连接数是实例上的全部会话，不是当前库的 numbackends。
+                    // CPU 只接受库内 os_runtime 采样，不用活跃会话比例冒充主机 CPU。
+                    conn = Metrics.exporterValue(metrics, "pg_stat_activity_total");
+                } else {
+                    conn = Metrics.exporterValue(metrics, "pg_stat_database_numbackends");
+                    Double active = Metrics.exporterValue(metrics, "pg_stat_activity_active");
+                    if (conn != null && conn > 0 && active != null) {
+                        cpu = Math.min(100, Metrics.round2(active / conn * 100));
+                    }
                 }
             }
             case DbType.SQLSERVER -> {
@@ -362,7 +384,7 @@ public final class HealthScorer {
             default -> {
             }
         }
-        if (hostCpuPct != null) {
+        if (!fromDatabase && hostCpuPct != null) {
             cpu = hostCpuPct;
         }
         return new Double[]{cpu, conn};

@@ -97,6 +97,7 @@ app.use('/api/diagnostics',     require('./src/routes/diagnostics'));
 app.use('/api/custom-metrics',  require('./src/routes/customMetrics'));
 app.use('/api/workbench',       require('./src/routes/sqlWorkbench'));
 app.use('/api/service-catalog', require('./src/routes/serviceCatalog'));
+app.use('/api/db-inspect',    require('./src/routes/dbInspect'));
 app.use('/api/deploy',        require('./src/routes/deploy'));
 
 // 兜底404

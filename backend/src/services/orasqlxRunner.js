@@ -13,7 +13,7 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { spawn, spawnSync } = require('child_process');
+const { spawn } = require('child_process');
 
 const TOOL_DIR = path.resolve(__dirname, '..', '..', 'tools', 'orasqlx');
 const SQL_ID_RE = /^[0-9a-z]{13}$/i;
@@ -24,10 +24,11 @@ const USER_RE = /^[A-Za-z0-9_$#.\-"]{1,128}$/;
 
 function candidates() {
   const arch = os.arch() === 'arm64' ? 'arm64' : 'amd64';
+  // 客户包只有执行文件 tools/orasqlx/orasqlx。dist/ 是打包机上的编译产物，源码不随包发布。
   return [
     process.env.ORASQLX_BIN,
-    path.join(TOOL_DIR, 'dist', `orasqlx-linux-${arch}`),
     path.join(TOOL_DIR, 'orasqlx'),
+    path.join(TOOL_DIR, 'dist', `orasqlx-linux-${arch}`),
   ].filter(Boolean);
 }
 
@@ -38,41 +39,8 @@ function findBinary() {
   return null;
 }
 
-/** 工程内自动编译：缺二进制时尝试 deps/go 或 PATH 中的 go（仅此模块，无需手工 build.sh） */
-function ensureBinary() {
-  const hit = findBinary();
-  if (hit) return hit;
-  const arch = os.arch() === 'arm64' ? 'arm64' : 'amd64';
-  const out = path.join(TOOL_DIR, 'dist', `orasqlx-linux-${arch}`);
-  const goCandidates = [
-    process.env.GO_BIN,
-    path.resolve(__dirname, '..', '..', '..', 'deps', 'go', 'bin', 'go'),
-    'go',
-  ].filter(Boolean);
-  let goBin = null;
-  for (const g of goCandidates) {
-    const r = spawnSync(g, ['version'], { stdio: 'ignore' });
-    if (r.status === 0) { goBin = g; break; }
-  }
-  if (!goBin) return null;
-  fs.mkdirSync(path.dirname(out), { recursive: true });
-  const env = {
-    ...process.env,
-    GOPROXY: process.env.GOPROXY || 'https://goproxy.cn,direct',
-    CGO_ENABLED: '0',
-    GOOS: 'linux',
-    GOARCH: arch,
-  };
-  const build = spawnSync(
-    goBin,
-  ['build', '-trimpath', '-ldflags', '-s -w', '-o', out, '.'],
-    { cwd: TOOL_DIR, env, stdio: 'pipe', timeout: 300000 },
-  );
-  if (build.status === 0) {
-    try { fs.chmodSync(out, 0o755); } catch (_) { /* ignore */ }
-    return findBinary();
-  }
-  return null;
+function missingBinaryMessage() {
+  return '未找到 orasqlx 执行文件（backend/tools/orasqlx/orasqlx）。请使用含该文件的离线包并重启后端，客户机不需要安装 Go。';
 }
 
 function runCapture(bin, args, { env = {}, timeoutMs = 20000 } = {}) {
@@ -89,11 +57,14 @@ function runCapture(bin, args, { env = {}, timeoutMs = 20000 } = {}) {
 
 /** 可用性：二进制是否存在。供前端决定是否可用并给出明确原因（无授权校验）。 */
 async function status() {
-  const bin = ensureBinary() || findBinary();
+  const bin = findBinary();
   if (!bin) {
-    return { available: false, reason: 'NO_BINARY', message: 'orasqlx 编译失败（需 Go 1.21+ 与网络拉取依赖），请联系管理员检查 backend/tools/orasqlx' };
+    return { available: false, reason: 'NO_BINARY', message: missingBinaryMessage() };
   }
-  const v = await runCapture(bin, ['--version']);
+  const v = await runCapture(bin, ['--version'], { timeoutMs: 8000 });
+  if (v.code !== 0) {
+    return { available: false, reason: 'BAD_BINARY', message: `orasqlx 无法执行：${(v.err || v.out || '').trim().slice(0, 300)}` };
+  }
   return { available: true, bin, version: (v.out || '').split('\n')[0].trim(), reason: 'OK', message: '可用' };
 }
 
@@ -110,8 +81,8 @@ function validate(opts) {
  * 返回 { jsonFile, docxFile, snapshot, findings, stdout }；失败抛出带说明的 Error。
  */
 async function runDiagnosis({ inst, pwd, sqlId, pdb, awrDays, noAwr, jobId, timeoutSec = 300, onLog }) {
-  const bin = ensureBinary() || findBinary();
-  if (!bin) throw new Error('orasqlx 不可用（自动编译未成功）');
+  const bin = findBinary();
+  if (!bin) throw new Error(missingBinaryMessage());
   const errs = validate({ sqlId, pdb, awrDays });
   if (errs.length) throw new Error(errs.join('；'));
   if (!USER_RE.test(inst.DB_USER || '') || !HOST_RE.test(inst.HOST_IP || '')) throw new Error('实例连接信息含不支持的字符');

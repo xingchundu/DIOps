@@ -9,6 +9,8 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=python39-home.sh
+. "$ROOT/scripts/python39-home.sh"
 OUT="$ROOT/offline-bundle"
 MODE="${1:-full}"
 NODE_MAJOR="${NODE_MAJOR:-18}"
@@ -28,6 +30,10 @@ need_cmd() {
 }
 
 resolve_pip_python() {
+  if [ -x "$DIOPS_PYTHON_HOME/bin/python3.9" ]; then
+    echo "$DIOPS_PYTHON_HOME/bin/python3.9"
+    return 0
+  fi
   if [ -x "$ROOT/deps/python/bin/python3.9" ]; then
     echo "$ROOT/deps/python/bin/python3.9"
     return 0

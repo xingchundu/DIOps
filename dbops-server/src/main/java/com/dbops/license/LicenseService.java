@@ -192,7 +192,7 @@ public class LicenseService {
                     // 升级前用旧算法（仅公钥+机器码）签的记录：校验通过后改用带服务端密钥的新算法重签
                     db.update("UPDATE SYS_LICENSE_STATE SET MAC = ? WHERE ID = 1", mac(last));
                 } else {
-                    log.warn("[license] SYS_LICENSE_STATE 校验失败（记录被修改，或 DBOPS_SECRET_KEY 被更换）");
+                    log.warn("[license] SYS_LICENSE_STATE 校验失败（记录被修改，或 DBOPS_SECRET_KEY 未加载/已更换）");
                     return true;
                 }
             }
@@ -213,14 +213,23 @@ public class LicenseService {
 
     /**
      * 防回拨记录的 HMAC 密钥。原来只由公钥 + 机器码推导——两者都是公开信息，任何人都能重算 MAC 伪造记录。
-     * 现在混入只存在于服务器环境变量里的 DBOPS_SECRET_KEY（未配置时退回 JWT_SECRET；都没有时保持旧算法）。
+     * 现在混入 DBOPS_SECRET_KEY（未配置时退回 JWT_SECRET；都没有时保持旧算法）。
+     * 启动脚本把 .env 放进 System properties，不一定导出到进程环境变量，两边都要看，否则每次都会被误判为时间回拨。
      */
     static String secretMaterial() {
-        String k = System.getenv("DBOPS_SECRET_KEY");
-        if (k == null || k.isBlank()) {
-            k = System.getenv("JWT_SECRET");
+        String k = configured("DBOPS_SECRET_KEY");
+        if (k == null) {
+            k = configured("JWT_SECRET");
         }
-        return k == null || k.isBlank() ? null : k;
+        return k;
+    }
+
+    private static String configured(String key) {
+        String v = System.getenv(key);
+        if (v == null || v.isBlank()) {
+            v = System.getProperty(key);
+        }
+        return v == null || v.isBlank() ? null : v.trim();
     }
 
     String legacyMac(long v) {

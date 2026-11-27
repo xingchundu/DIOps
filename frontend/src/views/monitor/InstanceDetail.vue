@@ -292,9 +292,11 @@
             <el-table-column prop="FREE_GB" label="剩余(GB)" width="110" />
             <el-table-column label="使用率" min-width="160">
               <template #default="{ row }">
-                <el-progress :percentage="row.USED_PCT || 0"
+                <el-progress v-if="row.USED_PCT != null && row.USED_PCT !== ''"
+                  :percentage="Math.min(100, Math.max(0, Number(row.USED_PCT) || 0))"
                   :color="row.USED_PCT>=90 ? '#ff4d4f' : row.USED_PCT>=80 ? '#faad14' : '#52c41a'"
                   :stroke-width="10" />
+                <span v-else class="muted">未设上限</span>
               </template>
             </el-table-column>
           </el-table>
@@ -724,8 +726,11 @@ const tsFootnote = computed(() => {
   if (t === 'MYSQL' || t === 'GOLDENDB') {
     return 'MySQL/GoldenDB：按账号可见的 schema 汇总容量；无全局 SELECT 时通常只显示本库。被管账号需 PROCESS + performance_schema，详见 docs/monitor-target-db-privileges.md'
   }
-  if (t === 'POSTGRESQL' || t === 'PANWEI') {
-    return 'PostgreSQL/磐维：按 database 展示；需对各库 CONNECT 及统计视图权限，否则仅当前库。'
+  if (t === 'PANWEI') {
+    return '磐维：按表空间展示。已设置 MAXSIZE 时使用率 = 已用 / 上限；未设置上限时不计算使用率。'
+  }
+  if (t === 'POSTGRESQL') {
+    return 'PostgreSQL：按 database 展示；需对各库 CONNECT 及统计视图权限，否则仅当前库。'
   }
   if (t === 'SQLSERVER') return 'SQL Server：展示当前连接库的数据文件占用。'
   if (t === 'ORACLE') {

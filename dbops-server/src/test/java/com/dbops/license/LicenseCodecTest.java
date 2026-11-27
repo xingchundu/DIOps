@@ -122,4 +122,21 @@ class LicenseCodecTest {
         assertEquals(LicenseCodec.State.CLOCK_TAMPERED, t.state());
         assertFalse(t.loginAllowed());
     }
+
+    @Test
+    void secretMaterialReadsDotenvProperty() {
+        String env = System.getenv("DBOPS_SECRET_KEY");
+        Assumptions.assumeTrue(env == null || env.isBlank());
+        String prev = System.getProperty("DBOPS_SECRET_KEY");
+        System.setProperty("DBOPS_SECRET_KEY", "unit-test-secret");
+        try {
+            assertEquals("unit-test-secret", LicenseService.secretMaterial());
+        } finally {
+            if (prev == null) {
+                System.clearProperty("DBOPS_SECRET_KEY");
+            } else {
+                System.setProperty("DBOPS_SECRET_KEY", prev);
+            }
+        }
+    }
 }

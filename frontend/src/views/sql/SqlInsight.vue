@@ -50,6 +50,7 @@
               <el-table-column prop="ASSET_ID" label="SQL#" width="80">
                 <template #default="{ row }"><el-button link type="primary" @click="openAsset(row.ASSET_ID, row.INSTANCE_ID)">{{ row.ASSET_ID }}</el-button></template>
               </el-table-column>
+              <el-table-column label="SQL_ID" width="150" show-overflow-tooltip><template #default="{ row }"><span class="mono">{{ shortSqlId(row.NATIVE_SQL_ID) }}</span></template></el-table-column>
               <el-table-column prop="SQL_TEXT" label="SQL" min-width="220" show-overflow-tooltip />
               <el-table-column prop="TOTAL_MS" label="总耗时(ms)" width="100" />
               <el-table-column prop="AVG_MS" label="均耗时" width="80" />
@@ -92,6 +93,7 @@
             <el-table-column label="规则" width="160"><template #default="{ row }">{{ row.RULE_CODE }} {{ row.RULE_NAME }}</template></el-table-column>
             <el-table-column v-if="!instId" prop="INSTANCE_NAME" label="实例" width="110" show-overflow-tooltip />
             <el-table-column prop="DETAIL" label="说明" min-width="220" show-overflow-tooltip />
+            <el-table-column label="SQL_ID" width="150" show-overflow-tooltip><template #default="{ row }"><span class="mono">{{ shortSqlId(row.NATIVE_SQL_ID) }}</span></template></el-table-column>
             <el-table-column prop="SQL_TEXT" label="SQL" min-width="200" show-overflow-tooltip>
               <template #default="{ row }"><el-button v-if="row.ASSET_ID" link type="primary" @click="openAsset(row.ASSET_ID, row.INSTANCE_ID)">{{ (row.SQL_TEXT || '').slice(0, 60) }}</el-button></template>
             </el-table-column>
@@ -145,6 +147,11 @@
           <div class="filters">
             <el-input v-model="sq.keyword" size="small" clearable placeholder="SQL 关键字 / 表名 / 指纹" style="width: 260px" @keyup.enter="loadAssets(1)" @clear="loadAssets(1)" />
             <el-checkbox v-model="sq.core" size="small" @change="loadAssets(1)">只看核心 SQL</el-checkbox>
+            <el-select v-model="sq.lifecycle" size="small" clearable placeholder="生命周期" style="width: 120px" @change="loadAssets(1)">
+              <el-option v-for="(l, k) in LIFE" :key="k" :label="l" :value="k" />
+            </el-select>
+            <el-input v-model="sq.qualityTag" size="small" clearable placeholder="质量标签" style="width: 130px" @keyup.enter="loadAssets(1)" @clear="loadAssets(1)" />
+            <el-button size="small" icon="Download" @click="exportLedger">导出 SQL 台账</el-button>
           </div>
           <el-table :data="assets.list" size="small" stripe v-loading="loading.assets">
             <el-table-column prop="ASSET_ID" label="SQL#" width="80">
@@ -153,10 +160,17 @@
             <el-table-column prop="DB_TYPE" label="方言" width="90" />
             <el-table-column prop="SCHEMA_NAME" label="Schema" width="100" show-overflow-tooltip />
             <el-table-column prop="STMT_TYPE" label="类型" width="80" />
+            <el-table-column label="SQL_ID" width="150" show-overflow-tooltip><template #default="{ row }"><span class="mono">{{ shortSqlId(row.NATIVE_SQL_ID) }}</span></template></el-table-column>
             <el-table-column prop="SQL_TEXT" label="SQL" min-width="260" show-overflow-tooltip />
             <el-table-column label="静态风险" width="90"><template #default="{ row }"><el-tag v-if="row.STATIC_RISK && row.STATIC_RISK !== 'NONE'" :type="sevType(row.STATIC_RISK)" size="small">{{ row.STATIC_RISK }}</el-tag><span v-else-if="row.STATIC_STATUS === 'UNANALYZED'" class="text-gray">未分析</span></template></el-table-column>
             <el-table-column label="问题/波动" width="90"><template #default="{ row }">{{ row.OPEN_PROBLEMS }} / {{ row.OPEN_ANOMALIES }}</template></el-table-column>
             <el-table-column label="核心" width="60"><template #default="{ row }"><el-icon v-if="row.IS_CORE == 1" color="#e6a23c"><StarFilled /></el-icon></template></el-table-column>
+            <el-table-column prop="BIZ_TYPE" label="业务" width="70" />
+            <el-table-column prop="SCENE" label="场景" width="100" show-overflow-tooltip />
+            <el-table-column prop="APP_VERSION" label="版本" width="80" show-overflow-tooltip />
+            <el-table-column prop="QUALITY_TAG" label="质量标签" width="100" show-overflow-tooltip />
+            <el-table-column label="生命周期" width="90"><template #default="{ row }"><el-tag size="small" :type="{ NEW: 'success', ACTIVE: '', DORMANT: 'info', DEPRECATED: 'warning', OFFLINE: 'info' }[row.LIFECYCLE_EFF]">{{ LIFE[row.LIFECYCLE_EFF] || row.LIFECYCLE_EFF }}</el-tag></template></el-table-column>
+            <el-table-column prop="OWNER" label="负责人" width="90" show-overflow-tooltip />
             <el-table-column label="最近出现" width="140"><template #default="{ row }">{{ fmt(row.LAST_SEEN) }}</template></el-table-column>
           </el-table>
           <el-pagination class="pager" small layout="total, prev, pager, next" :total="assets.total" :page-size="20" v-model:current-page="sq.page" @current-change="loadAssets" />
@@ -202,6 +216,7 @@
               <template #default="{ row }"><el-tag size="small" :type="{ REGRESSION: 'danger', IMPROVED: 'success', SIMILAR: 'info' }[row.VERDICT] || 'info'">{{ { REGRESSION: '退化', IMPROVED: '改善', SIMILAR: '相近', UNKNOWN: '未知' }[row.VERDICT] }}</el-tag></template>
             </el-table-column>
             <el-table-column v-if="!instId" prop="INSTANCE_NAME" label="实例" width="110" show-overflow-tooltip />
+            <el-table-column label="SQL_ID" width="150" show-overflow-tooltip><template #default="{ row }"><span class="mono">{{ shortSqlId(row.NATIVE_SQL_ID) }}</span></template></el-table-column>
             <el-table-column label="SQL" min-width="220" show-overflow-tooltip>
               <template #default="{ row }"><el-button link type="primary" @click="openAsset(row.ASSET_ID, row.INSTANCE_ID)">#{{ row.ASSET_ID }} {{ (row.SQL_TEXT || '').slice(0, 60) }}</el-button></template>
             </el-table-column>
@@ -210,11 +225,31 @@
             <el-table-column label="倍率" width="70"><template #default="{ row }"><span :class="{ danger: row.RATIO >= 1.5 }">{{ row.RATIO ? row.RATIO + 'x' : '-' }}</span></template></el-table-column>
             <el-table-column prop="EXECS" label="新计划执行" width="90" />
             <el-table-column label="首次出现" width="140"><template #default="{ row }">{{ fmt(row.FIRST_SEEN) }}</template></el-table-column>
-            <el-table-column label="操作" width="90" fixed="right">
-              <template #default="{ row }"><el-button link type="primary" size="small" @click="toAiOpt(row.SQL_TEXT, row.INSTANCE_ID)">规则优化</el-button></template>
+            <el-table-column label="操作" width="170" fixed="right">
+              <template #default="{ row }">
+                <el-button v-if="row.OLD_PLAN_HASH" link type="primary" size="small" @click="comparePlans(row)">访问路径</el-button>
+                <el-button link type="primary" size="small" @click="toAiOpt(row.SQL_TEXT, row.INSTANCE_ID)">规则优化</el-button>
+              </template>
             </el-table-column>
           </el-table>
+          <PlanDiffDialog v-model="planDlg" :loading="planDlgLoading" :data="planDlgData" />
         </div>
+      </el-tab-pane>
+
+      <el-tab-pane label="变化感知" name="changes" lazy>
+        <ChangesPanel ref="changesRef" :instance-id="instId" @open-asset="openAsset" />
+      </el-tab-pane>
+
+      <el-tab-pane label="长时间执行" name="longsql" lazy>
+        <LongSqlPanel ref="longRef" :instance-id="instId" @open-asset="openAsset" />
+      </el-tab-pane>
+
+      <el-tab-pane label="CPU 同期对比" name="cpu" lazy>
+        <CpuComparePanel ref="cpuRef" :instance-id="instId" @open-asset="openAsset" />
+      </el-tab-pane>
+
+      <el-tab-pane label="优化复测" name="retest" lazy>
+        <RetestPanel ref="retestRef" :instance-id="instId" :can-ops="canOps" @open-asset="openAsset" />
       </el-tab-pane>
 
       <el-tab-pane label="变更窗口" name="windows">
@@ -248,8 +283,21 @@
           <span class="text-gray">指纹 {{ asset.FINGERPRINT }}</span>
           <span style="flex: 1" />
           <el-switch v-model="assetCore" :disabled="!canOps" active-text="核心 SQL" size="small" @change="saveCore" />
+          <el-button size="small" :disabled="!canOps || !assetInst" @click="registerRetest">登记优化复测</el-button>
           <el-button size="small" type="primary" @click="toAiOpt(asset.SAMPLE_SQL, assetInst)">AI 优化</el-button>
         </div>
+        <el-form inline size="small" class="govern" :disabled="!canOps">
+          <el-form-item label="场景"><el-input v-model="gov.scene" style="width: 130px" placeholder="如 下单 / 对账" /></el-form-item>
+          <el-form-item label="版本"><el-input v-model="gov.appVersion" style="width: 90px" placeholder="v2.3" /></el-form-item>
+          <el-form-item label="质量标签"><el-input v-model="gov.qualityTag" style="width: 110px" placeholder="待优化" /></el-form-item>
+          <el-form-item label="生命周期">
+            <el-select v-model="gov.lifecycle" clearable placeholder="自动" style="width: 100px">
+              <el-option v-for="k in ['NEW', 'ACTIVE', 'DEPRECATED', 'OFFLINE']" :key="k" :label="LIFE[k]" :value="k" />
+            </el-select>
+          </el-form-item>
+          <el-form-item label="负责人"><el-input v-model="gov.owner" style="width: 100px" /></el-form-item>
+          <el-form-item><el-button type="primary" :loading="govSaving" @click="saveGov">保存</el-button></el-form-item>
+        </el-form>
         <pre class="sql-box">{{ asset.SAMPLE_SQL }}</pre>
         <div v-if="assetInst" class="card">
           <div class="card-title" style="justify-content: space-between">
@@ -270,6 +318,9 @@
           <el-button v-for="s in uniqSources(asset.sources)" :key="s.INSTANCE_ID" link type="primary" @click="assetInst = s.INSTANCE_ID; loadTrend()">{{ s.INSTANCE_NAME || s.INSTANCE_ID }}</el-button>
         </div>
         <el-tabs>
+          <el-tab-pane label="运行画像" lazy>
+            <ProfilePanel :asset-id="asset.ASSET_ID" :instance-id="assetInst" />
+          </el-tab-pane>
           <el-tab-pane :label="`静态分析（${staticFindings.length}）`">
             <el-table :data="staticFindings" size="small">
               <el-table-column prop="code" label="规则" width="80" />
@@ -452,12 +503,20 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import * as echarts from 'echarts'
 import { sqlInsightApi, sqlReviewApi, cmdbApi } from '@/api/index.js'
 import { useAuthStore } from '@/stores/auth.js'
+import ChangesPanel from './ChangesPanel.vue'
+import LongSqlPanel from './LongSqlPanel.vue'
+import CpuComparePanel from './CpuComparePanel.vue'
+import ProfilePanel from './ProfilePanel.vue'
+import RetestPanel from './RetestPanel.vue'
+import PlanDiffDialog from './PlanDiffDialog.vue'
+import { shortSqlId } from './sqlInsightUtil.js'
 
 const props = defineProps({
   instanceId: { type: [Number, String], default: null },   // 嵌入实例详情时传入
   embedded: { type: Boolean, default: false },
 })
 
+/** 原生 sql_id 展示：Oracle/DM 原值；MySQL 'schema|digest' 取 digest；PG 'userid|dbid|queryid|toplevel' 取 queryid */
 const route = useRoute()
 const router = useRouter()
 const auth = useAuthStore()
@@ -486,7 +545,8 @@ const assets = reactive({ list: [], total: 0 })
 const windows = reactive({ list: [], total: 0 })
 const pq = reactive({ status: 'OPEN', severity: '', ruleCode: '', page: 1 })
 const aq = reactive({ status: 'OPEN', type: '', page: 1 })
-const sq = reactive({ keyword: '', core: false, page: 1 })
+const sq = reactive({ keyword: '', core: false, lifecycle: '', qualityTag: '', page: 1 })
+const LIFE = { NEW: '新增', ACTIVE: '活跃', DORMANT: '休眠', DEPRECATED: '待下线', OFFLINE: '已下线' }
 const wq = reactive({ page: 1 })
 const loading = reactive({ problems: false, anomalies: false, assets: false, rules: false, windows: false, plans: false })
 const collecting = ref(false)
@@ -544,7 +604,7 @@ async function loadAnomalies(p) {
 async function loadAssets(p) {
   if (typeof p === 'number') sq.page = p
   loading.assets = true
-  try { Object.assign(assets, (await sqlInsightApi.assets(params({ keyword: sq.keyword || undefined, isCore: sq.core ? 1 : undefined, page: sq.page, size: 20 }))).data) } catch (e) { onLoadError(e) } finally { loading.assets = false }
+  try { Object.assign(assets, (await sqlInsightApi.assets(params({ keyword: sq.keyword || undefined, isCore: sq.core ? 1 : undefined, lifecycle: sq.lifecycle || undefined, qualityTag: sq.qualityTag || undefined, page: sq.page, size: 20 }))).data) } catch (e) { onLoadError(e) } finally { loading.assets = false }
 }
 async function loadWindows(p) {
   if (typeof p === 'number') wq.page = p
@@ -604,6 +664,8 @@ async function openAsset(id, inst) {
   assetInst.value = inst || instId.value || null
   asset.value = (await sqlInsightApi.asset(id, { instanceId: assetInst.value || undefined })).data
   assetCore.value = asset.value?.IS_CORE == 1
+  Object.assign(gov, { scene: asset.value?.SCENE || '', appVersion: asset.value?.APP_VERSION || '', qualityTag: asset.value?.QUALITY_TAG || '',
+    lifecycle: asset.value?.LIFECYCLE || '', owner: asset.value?.OWNER || '' })
   assetVisible.value = true
   if (assetInst.value) { await nextTick(); loadTrend() }
 }
@@ -631,6 +693,56 @@ async function loadTrend() {
       data: pts.map((p) => ((Number(p.ANOMALY_FLAGS || 0) & (1 << metricIdx)) ? p.V : null)),
     }],
   }, true)
+}
+const planDlg = ref(false)
+const planDlgLoading = ref(false)
+const planDlgData = ref({})
+async function comparePlans(row) {
+  planDlg.value = true
+  planDlgLoading.value = true
+  planDlgData.value = {}
+  try { planDlgData.value = (await sqlInsightApi.planCompare({ instanceId: row.INSTANCE_ID, assetId: row.ASSET_ID, oldHash: row.OLD_PLAN_HASH, newHash: row.PLAN_HASH })).data || {} }
+  catch { planDlgData.value = { summary: '获取计划失败' } } finally { planDlgLoading.value = false }
+}
+async function registerRetest() {
+  let startNow = false
+  try {
+    await ElMessageBox.confirm('优化方案是否已经上线？已上线将以「前 24 小时」为优化前基线立即开始观察；未上线则先登记，上线后在「优化复测」页点“已上线，开始观察”。',
+      '登记优化复测', { distinguishCancelAndClose: true, confirmButtonText: '已上线，立即观察', cancelButtonText: '未上线，先登记', type: 'info' })
+    startNow = true
+  } catch (action) {
+    if (action === 'close') return
+  }
+  const r = await sqlInsightApi.createRetest({ instanceId: assetInst.value, assetId: asset.value.ASSET_ID, startNow, note: '手动登记' })
+  ElMessage.success(r.message || '已登记')
+  tab.value = 'retest'
+  assetVisible.value = false
+}
+const gov = reactive({ scene: '', appVersion: '', qualityTag: '', lifecycle: '', owner: '' })
+const govSaving = ref(false)
+async function saveGov() {
+  govSaving.value = true
+  try {
+    await sqlInsightApi.updateAsset(asset.value.ASSET_ID, { ...gov })
+    ElMessage.success('SQL 资产属性已保存')
+    if (tab.value === 'assets') loadAssets()
+  } finally { govSaving.value = false }
+}
+/** 导出 SQL 台账（CSV，含 sql_id / 业务 / 场景 / 版本 / 质量标签 / 生命周期） */
+async function exportLedger() {
+  const rows = (await sqlInsightApi.assets(params({ keyword: sq.keyword || undefined, isCore: sq.core ? '1' : undefined, lifecycle: sq.lifecycle || undefined,
+    qualityTag: sq.qualityTag || undefined, page: 1, size: 500 }))).data?.list || []
+  const head = ['SQL#', 'SQL_ID', '方言', 'Schema', '类型', '核心', '业务类型', '场景', '版本', '质量标签', '生命周期', '负责人', '静态风险', '首次出现', '最近出现', 'SQL']
+  const q = (v) => `"${String(v ?? '').replace(/"/g, '""').replace(/\r?\n/g, ' ')}"`
+  const lines = rows.map((r) => [r.ASSET_ID, shortSqlId(r.NATIVE_SQL_ID), r.DB_TYPE, r.SCHEMA_NAME, r.STMT_TYPE, r.IS_CORE == 1 ? '是' : '', r.BIZ_TYPE, r.SCENE, r.APP_VERSION,
+    r.QUALITY_TAG, LIFE[r.LIFECYCLE_EFF] || r.LIFECYCLE_EFF, r.OWNER, r.STATIC_RISK, fmt(r.FIRST_SEEN), fmt(r.LAST_SEEN), r.SQL_TEXT].map(q).join(','))
+  const blob = new Blob(['\ufeff' + [head.map(q).join(','), ...lines].join('\r\n')], { type: 'text/csv;charset=utf-8' })
+  const a = document.createElement('a')
+  a.href = URL.createObjectURL(blob)
+  a.download = `sql_ledger_${new Date().toISOString().slice(0, 10)}.csv`
+  a.click()
+  URL.revokeObjectURL(a.href)
+  ElMessage.success(`已导出 ${rows.length} 条（单次最多 500 条，可用筛选缩小范围）`)
 }
 async function saveCore(v) {
   await sqlInsightApi.updateAsset(asset.value.ASSET_ID, { isCore: v })
@@ -806,6 +918,8 @@ watch(assetVisible, (v) => { if (!v && chart) { chart.dispose(); chart = null } 
 .filters { display: flex; gap: 8px; align-items: center; margin-bottom: 10px; flex-wrap: wrap; }
 .pager { margin-top: 10px; justify-content: flex-end; }
 .asset-head { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; flex-wrap: wrap; }
+.govern { margin: 6px 0; }
+.govern :deep(.el-form-item) { margin-bottom: 4px; margin-right: 10px; }
 .sql-box { background: var(--el-fill-color-light, #f5f7fa); padding: 10px; border-radius: 4px; max-height: 180px; overflow: auto; white-space: pre-wrap; word-break: break-all; font-size: 12px; }
 .trend { height: 260px; width: 100%; }
 .actions { margin: 12px 0; display: flex; gap: 8px; flex-wrap: wrap; }

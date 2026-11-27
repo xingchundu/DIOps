@@ -79,7 +79,14 @@ public class TargetConnector {
                 p.setProperty("socketTimeout", String.valueOf((querySec + 10) * 1000));
                 // 原来强制 useSSL=false。改为 PREFERRED：服务端支持 TLS 就加密，不支持时退回明文（兼容老库）；
                 // 要求必须加密可设 DBOPS_MYSQL_SSL_MODE=REQUIRED / VERIFY_CA
-                String sslMode = System.getenv().getOrDefault("DBOPS_MYSQL_SSL_MODE", "PREFERRED");
+                // .env 由 EnvFileLoader 写入系统属性，不进进程环境变量
+                String sslMode = System.getenv("DBOPS_MYSQL_SSL_MODE");
+                if (sslMode == null || sslMode.isBlank()) {
+                    sslMode = System.getProperty("DBOPS_MYSQL_SSL_MODE");
+                }
+                if (sslMode == null || sslMode.isBlank()) {
+                    sslMode = "PREFERRED";
+                }
                 p.setProperty("sslMode", sslMode);
                 p.setProperty("allowPublicKeyRetrieval", "true");
                 p.setProperty("characterEncoding", "UTF-8");

@@ -7,7 +7,7 @@
     "start": "powershell -NoProfile -ExecutionPolicy Bypass -File ./run-node-clean.ps1 -Mode start",
     "dev": "powershell -NoProfile -ExecutionPolicy Bypass -File ./run-node-clean.ps1 -Mode dev",
     "init-db": "powershell -NoProfile -ExecutionPolicy Bypass -File ./run-node-clean.ps1 -Mode init-db",
-    "test": "node --test test/fixes.test.js test/platform-p0.test.js"
+    "test": "node --test test/fixes.test.js test/platform-p0.test.js test/dbinspect.test.js"
   },
   "dependencies": {
     "archiver": "^7.0.1",

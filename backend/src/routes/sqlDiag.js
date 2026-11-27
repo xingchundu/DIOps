@@ -23,7 +23,12 @@ db.execute(`UPDATE SQL_DIAG_JOB SET STATUS='FAILED', ERR_MSG='服务重启，任
   .catch(() => { /* 表尚未迁移时忽略 */ });
 
 const ok = (res, data) => res.json({ code: 200, data });
-const fail = (res, msg, code = 500) => res.json({ code, msg });
+// 必须带 HTTP 状态。只写 body.code 时网关仍是 200，前端成功拦截器会丢掉提示，按钮看起来没反应。
+const fail = (res, msg, code = 500) => {
+  const status = Number(code);
+  const http = status >= 400 && status <= 599 ? status : 500;
+  return res.status(http).json({ code: http, msg });
+};
 
 router.get('/status', async (req, res) => {
   try { ok(res, { ...(await runner.status()), maxParallel: MAX_PARALLEL, running }); } catch (e) { fail(res, e.message); }
@@ -51,7 +56,14 @@ router.post('/run', canRun, async (req, res) => {
     const r = await db.execute(
       `INSERT INTO SQL_DIAG_JOB (INSTANCE_ID, SQL_ID, OPTIONS, STATUS, CREATED_BY) VALUES (:1,:2,:3,'RUNNING',:4) RETURNING JOB_ID INTO :5`,
       [Number(instanceId), sid, JSON.stringify(options), req.user?.userId ?? null, { dir: oracledb.BIND_OUT, type: oracledb.NUMBER }]);
-    const jobId = r.outBinds[0][0];
+    let jobId = db.pluckOutBind(r);
+    if (!jobId) {
+      const q = await db.execute(
+        `SELECT MAX(JOB_ID) AS JOB_ID FROM SQL_DIAG_JOB WHERE INSTANCE_ID=:1 AND SQL_ID=:2 AND STATUS='RUNNING'`,
+        [Number(instanceId), sid]);
+      jobId = Number(q.rows?.[0]?.JOB_ID) || null;
+    }
+    if (!jobId) return fail(res, '诊断任务没有写入成功（未得到任务号）', 500);
 
     running += 1;
     ok(res, { jobId, status: 'RUNNING' });
@@ -78,13 +90,19 @@ router.post('/run', canRun, async (req, res) => {
           summary: { counts: sum.counts },
         }).catch((e) => console.warn('[kg] recordDiag 失败:', e.message));
       } catch (e) {
+        console.error('[sql-diag] job', jobId, e.message);
         await db.execute(`UPDATE SQL_DIAG_JOB SET STATUS='FAILED', ERR_MSG=:1, FINISHED_AT=SYSTIMESTAMP WHERE JOB_ID=:2`,
           [Buffer.from(String(e.message)).subarray(0, 1900).toString('utf8').replace(/�/g, ''), jobId]).catch(() => {});
       } finally {
         running -= 1;
       }
     })();
-  } catch (e) { fail(res, e.message); }
+  } catch (e) {
+    const msg = /ORA-00942/.test(e.message || '')
+      ? '诊断记录表 SQL_DIAG_JOB 不存在，请在平台库执行 sql/init.sql 中的建表段后重试'
+      : e.message;
+    fail(res, msg);
+  }
 });
 
 router.get('/jobs', async (req, res) => {

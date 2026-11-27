@@ -143,8 +143,11 @@ public class CollectService {
 
         @SuppressWarnings("unchecked")
         List<Map<String, Object>> metrics = (List<Map<String, Object>>) bundle.get("metrics");
-        Double hostCpu = Metrics.keyValue(hr.hostMetrics(), "host_cpu_used_pct");
-        Double[] trend = HealthScorer.trend(dbType, metrics, hostCpu);
+        Double sshCpu = Metrics.keyValue(hr.hostMetrics(), "host_cpu_used_pct");
+        Double panweiCpu = Metrics.keyValue(engineMetrics, "panwei_host_cpu_pct");
+        // 磐维关联主机经常是监控机，SSH 的 CPU 不是数据库所在主机。趋势只记库内采样。
+        Double trendCpu = DbType.PANWEI.equals(dbType) ? panweiCpu : (panweiCpu != null ? panweiCpu : sshCpu);
+        Double[] trend = HealthScorer.trend(dbType, metrics, trendCpu);
         HealthScorer.Score score = HealthScorer.compute(dbType, new HealthScorer.Snapshot(metrics, engineMetrics, hr.hostMetrics()));
 
         Map<String, Object> json = new LinkedHashMap<>();

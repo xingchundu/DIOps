@@ -6,8 +6,10 @@
       </el-select>
       <el-input v-model="form.sqlId" placeholder="SQL_ID（13 位）" size="small" style="width: 200px" maxlength="13" clearable />
       <el-input v-model="form.pdb" placeholder="PDB（可选，CDB 环境）" size="small" style="width: 170px" clearable />
-      <el-button type="primary" size="small" :loading="submitting" @click="run">开始诊断</el-button>
+      <el-button type="primary" size="small" native-type="button" :loading="submitting" @click="run">开始诊断</el-button>
       <div class="text-gray tip">只读采集 V$/DBA 视图 + 执行计划，规则 R01–R23 判定后生成 Word 报告；结果自动写入知识图谱。</div>
+      <el-alert v-if="banner" class="banner" type="error" :closable="false" show-icon :title="banner" />
+      <el-alert v-else-if="toolHint" class="banner" type="warning" :closable="false" show-icon :title="toolHint" />
     </div>
 
     <el-table :data="jobs" size="small" style="margin-top: 10px" v-loading="loading" empty-text="暂无诊断记录">
@@ -65,6 +67,7 @@ const instances = ref([]); const jobs = ref([]); const loading = ref(false)
 const submitting = ref(false); const page = ref(1); const size = 10; const total = ref(0)
 const form = reactive({ instanceId: null, sqlId: '', pdb: '' })
 const drawer = ref(false); const cur = ref(null); let timer = null
+const banner = ref(''); const toolHint = ref('')
 const oracleInstances = computed(() => instances.value.filter(i => String(i.DB_TYPE).toUpperCase() === 'ORACLE'))
 const instName = id => instances.value.find(i => i.INSTANCE_ID === id)?.INSTANCE_NAME || id
 const fmt = v => (v ? String(v).replace('T', ' ').slice(0, 19) : '-')
@@ -78,6 +81,8 @@ async function load() {
     const d = (await sqlDiagApi.jobs({ page: page.value, size })).data || {}
     jobs.value = d.rows || d.list || []; total.value = d.total || jobs.value.length
     schedulePoll()
+  } catch (e) {
+    banner.value = e?.message || '诊断记录加载失败'
   } finally { loading.value = false }
 }
 function schedulePoll() {
@@ -85,12 +90,24 @@ function schedulePoll() {
   if (jobs.value.some(j => j.STATUS === 'RUNNING')) timer = setTimeout(load, 4000)
 }
 async function run() {
-  if (!form.instanceId) return ElMessage.warning('请选择 Oracle 实例')
-  if (!/^[0-9a-z]{13}$/i.test(form.sqlId.trim())) return ElMessage.warning('SQL_ID 应为 13 位字母数字')
+  banner.value = ''
+  if (!form.instanceId) {
+    banner.value = '请选择 Oracle 实例'
+    return ElMessage.warning(banner.value)
+  }
+  if (!/^[0-9a-z]{13}$/i.test(String(form.sqlId || '').trim())) {
+    banner.value = 'SQL_ID 应为 13 位字母数字'
+    return ElMessage.warning(banner.value)
+  }
   submitting.value = true
   try {
     await sqlDiagApi.run({ instanceId: form.instanceId, sqlId: form.sqlId.trim(), pdb: form.pdb || undefined, noAwr: true })
-    ElMessage.success('已开始诊断，完成后可查看结论 / 下载 Word'); page.value = 1; await load()
+    ElMessage.success('已开始诊断，完成后可查看结论 / 下载 Word')
+    page.value = 1
+    await load()
+  } catch (e) {
+    banner.value = e?.message || '诊断没有启动'
+    ElMessage.error(banner.value)
   } finally { submitting.value = false }
 }
 async function openJob(row) { cur.value = (await sqlDiagApi.job(row.JOB_ID)).data; drawer.value = true }
@@ -101,7 +118,10 @@ async function download(row, kind) {
   a.download = `${row.SQL_ID}_${kind === 'docx' ? 'diag.docx' : 'snapshot.json'}`; a.click(); URL.revokeObjectURL(a.href)
 }
 onMounted(async () => {
-  sqlDiagApi.status().catch(() => { /* 后台探测/触发自动编译，不弹窗 */ })
+  try {
+    const st = (await sqlDiagApi.status())?.data
+    if (st && st.available === false) toolHint.value = st.message || '深度诊断程序不可用'
+  } catch (e) { toolHint.value = e?.message || '' }
   try { const r = await monitorApi.instances?.({ pageSize: 500 }); instances.value = r?.data?.rows || r?.data?.list || r?.data || [] } catch (_) { /* ignore */ }
   load()
 })
@@ -112,6 +132,7 @@ onBeforeUnmount(() => clearTimeout(timer))
 <style scoped>
 .form { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; padding: 12px }
 .tip { width: 100%; font-size: 12px }
+.banner { width: 100% }
 .counts { display: flex; gap: 8px; align-items: center; margin-bottom: 10px }
 .ev { font-size: 13px; line-height: 1.7; color: var(--el-text-color-regular) }
 .adv { margin-top: 6px; line-height: 1.7 }

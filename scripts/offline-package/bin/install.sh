@@ -102,6 +102,85 @@ install_module() {
 install_module sql-optimizer
 install_module ai-ops
 
+key_weak() {
+  local v="${1:-}"
+  [ -z "$v" ] && return 0
+  case "$v" in *请换*|dbops_secret|dbops_platform_secret_2026) return 0 ;; esac
+  [ "${#v}" -lt 16 ]
+}
+
+# 库内密码已是 AESGCM 时，本机必须沿用原服务器的 DBOPS_SECRET_KEY，不能另造一把。
+ensure_dbops_secret_key() {
+  local cur n key
+  cur="$(grep -E '^DBOPS_SECRET_KEY=' config/backend.env 2>/dev/null | tail -1 | cut -d= -f2- | tr -d '\r' || true)"
+  if ! key_weak "$cur"; then
+    return 0
+  fi
+  echo "[INFO] 未配置 DBOPS_SECRET_KEY，正在检查平台库里是否已有加密密码 ..."
+  if ! n="$(cd "$ROOT/backend" && "$NODE" <<'JS'
+require('dotenv').config();
+const oracledb = require('oracledb');
+function connectString() {
+  const direct = String(process.env.DB_CONNECT_STRING || '').trim();
+  if (direct) return direct;
+  const host = process.env.DB_HOST;
+  const port = process.env.DB_PORT || '1521';
+  const svc = String(process.env.DB_SERVICE_NAME || '').trim();
+  const sid = String(process.env.DB_SID || '').trim();
+  if (host && svc) return host + ':' + port + '/' + svc;
+  if (host && sid) return host + ':' + port + '/' + sid;
+  return '';
+}
+(async () => {
+  const cs = connectString();
+  if (!cs || !process.env.DB_USER) { console.error('DB 配置不完整'); process.exit(2); }
+  const c = await oracledb.getConnection({ user: process.env.DB_USER, password: process.env.DB_PASSWORD, connectString: cs });
+  async function cnt(sql) {
+    try {
+      const r = await c.execute(sql, [], { outFormat: oracledb.OUT_FORMAT_OBJECT });
+      return Number((r.rows[0] && r.rows[0].N) || 0);
+    } catch (e) {
+      if (/ORA-00942|ORA-00904/.test(String(e.message))) return 0;
+      throw e;
+    }
+  }
+  const n = await cnt("SELECT COUNT(*) AS N FROM CMDB_INSTANCE WHERE DB_PASSWORD LIKE 'AESGCM:v1:%'")
+    + await cnt("SELECT COUNT(*) AS N FROM CMDB_HOST WHERE SSH_PASSWORD LIKE 'AESGCM:v1:%'");
+  await c.close();
+  process.stdout.write(String(n));
+})().catch((e) => { console.error(e.message); process.exit(1); });
+JS
+)"; then
+    echo "[ERROR] 无法确认库内密码是否已加密，因此不会新生成 DBOPS_SECRET_KEY。"
+    echo "        请把原应用服务器 config/backend.env 中的 DBOPS_SECRET_KEY 原样写入本机后再执行 ./bin/install.sh"
+    exit 1
+  fi
+  n="$(printf '%s' "$n" | tr -d '[:space:]')"
+  if [ "$n" != "0" ]; then
+    echo "[ERROR] 平台库里已有 ${n} 条 AES 加密的被管库/主机密码，本机没有 DBOPS_SECRET_KEY。"
+    echo "        这不是 Oracle 深度诊断单独的加密。监控、SQL 采集、深度诊断都用这把密钥解开 CMDB 里的密码。"
+    echo "        请从原来那台应用服务器复制同一行到本机 config/backend.env 后重新启动："
+    echo "          grep '^DBOPS_SECRET_KEY=' config/backend.env"
+    echo "        不要新生成。密钥不一致时只能到资产管理里逐个重新保存密码。"
+    exit 1
+  fi
+  key="$(openssl rand -hex 24)"
+  if grep -q '^DBOPS_SECRET_KEY=' config/backend.env; then
+    sed -i "s|^DBOPS_SECRET_KEY=.*|DBOPS_SECRET_KEY=${key}|" config/backend.env
+  else
+    printf '\nDBOPS_SECRET_KEY=%s\n' "$key" >> config/backend.env
+  fi
+  sync_customer_env
+  set -a
+  # shellcheck disable=SC1091
+  source config/backend.env
+  set +a
+  echo "[OK] 库内还没有加密密码，已生成 DBOPS_SECRET_KEY 并写入 config/backend.env"
+  echo "     请备份该文件。另一台应用服务器必须使用同一个 DBOPS_SECRET_KEY。"
+}
+
+ensure_dbops_secret_key
+
 echo "[INFO] 检测平台库连接 ..."
 if ! (cd "$ROOT/backend" && "$NODE" -e "
 require('dotenv').config();

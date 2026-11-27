@@ -38,8 +38,11 @@ public class SqlInsightOpsController {
     private final SqlOptimizeService optimizer;
     private final SqlPrecheckService precheck;
     private final AuditService audit;
+    private final com.dbops.sqlinsight.plan.RetestService retests;
 
-    public SqlInsightOpsController(Db db, SqlOptimizeService optimizer, SqlPrecheckService precheck, AuditService audit) {
+    public SqlInsightOpsController(Db db, SqlOptimizeService optimizer, SqlPrecheckService precheck, AuditService audit,
+                                   com.dbops.sqlinsight.plan.RetestService retests) {
+        this.retests = retests;
         this.db = db;
         this.optimizer = optimizer;
         this.precheck = precheck;
@@ -117,13 +120,15 @@ public class SqlInsightOpsController {
         m.put("anomalyFeed", db.query("SELECT * FROM (SELECT x.ANOMALY_ID, x.INSTANCE_ID, i.INSTANCE_NAME, x.ASSET_ID, x.SCOPE, x.METRIC, x.DIRECTION, "
                 + "x.ANOMALY_TYPE, x.SEVERITY, x.STATUS, ROUND(x.RATIO, 2) RATIO, x.START_TIME, x.LAST_TIME, "
                 + "(SELECT MAX(d.PRIMARY_CAUSE) KEEP (DENSE_RANK LAST ORDER BY d.CREATED_AT) FROM DI_SQL_ANOMALY_DIAGNOSIS d "
-                + "WHERE d.ANOMALY_ID = x.ANOMALY_ID AND d.STATUS = 'DONE') PRIMARY_CAUSE, DBMS_LOB.SUBSTR(a.SAMPLE_SQL, 160, 1) SQL_TEXT "
+                + "WHERE d.ANOMALY_ID = x.ANOMALY_ID AND d.STATUS = 'DONE') PRIMARY_CAUSE, DBMS_LOB.SUBSTR(a.SAMPLE_SQL, 160, 1) SQL_TEXT, "
+                + "(SELECT MAX(src.NATIVE_ID) KEEP (DENSE_RANK LAST ORDER BY src.LAST_SEEN) FROM DI_SQL_ASSET_SOURCE src WHERE src.ASSET_ID = x.ASSET_ID AND src.INSTANCE_ID = x.INSTANCE_ID) NATIVE_SQL_ID "
                 + "FROM DI_SQL_ANOMALY x LEFT JOIN CMDB_INSTANCE i ON i.INSTANCE_ID = x.INSTANCE_ID LEFT JOIN DI_SQL_ASSET a ON a.ASSET_ID = x.ASSET_ID "
                 + "WHERE x.LAST_TIME >= SYSTIMESTAMP - INTERVAL '1' DAY" + ic.replace("INSTANCE_ID", "x.INSTANCE_ID")
                 + " ORDER BY DECODE(x.STATUS, 'OPEN', 0, 1), x.LAST_TIME DESC) WHERE ROWNUM <= 20"));
         m.put("topSql", db.query("SELECT * FROM (SELECT s.ASSET_ID, s.INSTANCE_ID, MAX(i.INSTANCE_NAME) INSTANCE_NAME, SUM(s.D_EXEC) EXECS, "
                 + "ROUND(SUM(s.D_ELAPSED_MS) / 1000, 1) DB_TIME_SEC, ROUND(SUM(s.D_ELAPSED_MS) / NULLIF(SUM(s.D_EXEC), 0), 2) AVG_MS, "
                 + "ROUND(SUM(s.D_LOGICAL_READS) / NULLIF(SUM(s.D_EXEC), 0), 0) LR_PER_EXEC, MAX(a.STMT_TYPE) STMT_TYPE, "
+                + "(SELECT MAX(src.NATIVE_ID) KEEP (DENSE_RANK LAST ORDER BY src.LAST_SEEN) FROM DI_SQL_ASSET_SOURCE src WHERE src.ASSET_ID = s.ASSET_ID AND src.INSTANCE_ID = s.INSTANCE_ID) NATIVE_SQL_ID, "
                 + "MAX(DBMS_LOB.SUBSTR(a.SAMPLE_SQL, 160, 1)) SQL_TEXT FROM DI_SQL_STATS_MIN s JOIN DI_SQL_ASSET a ON a.ASSET_ID = s.ASSET_ID "
                 + "LEFT JOIN CMDB_INSTANCE i ON i.INSTANCE_ID = s.INSTANCE_ID WHERE s." + win.trim() + sic
                 + " GROUP BY s.ASSET_ID, s.INSTANCE_ID ORDER BY DB_TIME_SEC DESC NULLS LAST) WHERE ROWNUM <= 10"));
@@ -135,7 +140,7 @@ public class SqlInsightOpsController {
                 + "ROUND(SUM(D_ELAPSED_MS) / NULLIF(SUM(D_EXEC), 0), 2) AVG_MS FROM DI_SQL_STATS_MIN WHERE" + win + ic
                 + " GROUP BY INSTANCE_ID) t ON t.INSTANCE_ID = i.INSTANCE_ID ORDER BY PROBLEMS + ANOMALIES DESC, DB_TIME_SEC DESC) WHERE ROWNUM <= 10"));
         m.put("slowTop", db.query("SELECT * FROM (SELECT s.SQL_ID ROW_ID, s.INSTANCE_ID, i.INSTANCE_NAME, s.DB_TYPE, s.AVG_ELAPSED, s.MAX_ELAPSED, "
-                + "s.EXEC_COUNT, s.FULL_SCAN, s.CAPTURE_TIME, DBMS_LOB.SUBSTR(s.SQL_TEXT, 160, 1) SQL_TEXT FROM SQL_SLOW_SUMMARY s "
+                + "s.EXEC_COUNT, s.FULL_SCAN, s.CAPTURE_TIME, s.NATIVE_SQL_ID, DBMS_LOB.SUBSTR(s.SQL_TEXT, 160, 1) SQL_TEXT FROM SQL_SLOW_SUMMARY s "
                 + "LEFT JOIN CMDB_INSTANCE i ON i.INSTANCE_ID = s.INSTANCE_ID WHERE s.CAPTURE_TIME >= SYSTIMESTAMP - INTERVAL '1' DAY" + sic
                 + " ORDER BY s.AVG_ELAPSED DESC NULLS LAST) WHERE ROWNUM <= 10"));
         m.put("dbTypes", db.query("SELECT i.DB_TYPE, COUNT(DISTINCT i.INSTANCE_ID) INSTANCES FROM CMDB_INSTANCE i "
@@ -174,9 +179,13 @@ public class SqlInsightOpsController {
         String window = "NUMTODSINTERVAL(" + h + ", 'HOUR')";
         String sic = instanceId == null ? "" : " AND s.INSTANCE_ID=" + instanceId;
         List<Map<String, Object>> rows = db.query("SELECT q.*, i.INSTANCE_NAME, i.DB_TYPE, DBMS_LOB.SUBSTR(a.SAMPLE_SQL, 300, 1) SQL_TEXT, a.STMT_TYPE, "
+                + "(SELECT MAX(src.NATIVE_ID) KEEP (DENSE_RANK LAST ORDER BY src.LAST_SEEN) FROM DI_SQL_ASSET_SOURCE src WHERE src.ASSET_ID = q.ASSET_ID AND src.INSTANCE_ID = q.INSTANCE_ID) NATIVE_SQL_ID, "
                 + "(SELECT ROUND(SUM(o.D_ELAPSED_MS) / NULLIF(SUM(o.D_EXEC), 0), 2) FROM DI_SQL_STATS_MIN o WHERE o.INSTANCE_ID = q.INSTANCE_ID "
                 + "AND o.ASSET_ID = q.ASSET_ID AND o.PLAN_HASH <> q.PLAN_HASH AND o.WINDOW_START < q.FIRST_SEEN "
                 + "AND o.WINDOW_START >= q.FIRST_SEEN - INTERVAL '7' DAY) OLD_AVG_MS, "
+                + "(SELECT ROUND(SUM(o.D_LOGICAL_READS) / NULLIF(SUM(o.D_EXEC), 0), 0) FROM DI_SQL_STATS_MIN o WHERE o.INSTANCE_ID = q.INSTANCE_ID "
+                + "AND o.ASSET_ID = q.ASSET_ID AND o.PLAN_HASH <> q.PLAN_HASH AND o.WINDOW_START < q.FIRST_SEEN "
+                + "AND o.WINDOW_START >= q.FIRST_SEEN - INTERVAL '7' DAY) OLD_LR_PER_EXEC, "
                 + "(SELECT MAX(o.PLAN_HASH) KEEP (DENSE_RANK LAST ORDER BY o.WINDOW_START) FROM DI_SQL_STATS_MIN o WHERE o.INSTANCE_ID = q.INSTANCE_ID "
                 + "AND o.ASSET_ID = q.ASSET_ID AND o.PLAN_HASH <> q.PLAN_HASH AND o.WINDOW_START < q.FIRST_SEEN) OLD_PLAN_HASH "
                 + "FROM (SELECT s.INSTANCE_ID, s.ASSET_ID, s.PLAN_HASH, MIN(s.WINDOW_START) FIRST_SEEN, MAX(s.WINDOW_START) LAST_SEEN, SUM(s.D_EXEC) EXECS, "
@@ -301,6 +310,12 @@ public class SqlInsightOpsController {
         db.updateQuietly("INSERT INTO SQL_REVIEW_COMMENT (TICKET_ID, USER_ID, COMMENT_TEXT, COMMENT_TYPE) VALUES (?, ?, ?, 'SYSTEM')",
                 ticketId, u.userId(), Values.truncate(comment(problemId != null, src, opt, optError, Values.str(b.get("note"))), 1900));
         audit.log(u, "SQLINSIGHT_TICKET", table, String.valueOf(srcId), "SUCCESS", "ticket=" + ticketId);
+        try {
+            // 优化复测：工单通过后自动开始观察（见 RetestService.syncTickets）
+            retests.createPending(instanceId, assetId, ticketId, "由优化工单 #" + ticketId + " 自动登记", 6, u.username());
+        } catch (Exception e) {
+            // 复测登记失败不影响工单本身（旧库未执行迁移脚本时 DI_SQL_RETEST 不存在）
+        }
         return R.ok(R.map("ticketId", ticketId, "created", true), "已生成优化工单 #" + ticketId);
     }
 

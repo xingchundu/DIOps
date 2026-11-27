@@ -7,6 +7,8 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=scripts/python39-home.sh
+. "$ROOT/scripts/python39-home.sh"
 LOGD="$ROOT/logs"
 PIDD="$LOGD/pids"
 mkdir -p "$LOGD" "$PIDD"

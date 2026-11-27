@@ -30,7 +30,9 @@ public class HostCollector {
         CMD.put("loadavg", "cat /proc/loadavg 2>/dev/null || uptime");
         CMD.put("mem", "free -m 2>/dev/null | awk '/^Mem:/ {print $2,$3,$4}'");
         CMD.put("df", "LANG=C df -P 2>/dev/null | awk 'NR>1 {gsub(/%/,\"\",$5); print $1,$5,$6}'");
-        CMD.put("cpu", "LANG=C top -bn1 2>/dev/null | grep -E 'Cpu\\(s\\)|%Cpu' | head -1");
+        // top -bn1 的第一帧是开机至今的平均，不是当前使用率。先采 1 秒 /proc/stat 差值；没有 /proc/stat 时再取 top 第二帧。
+        CMD.put("cpu", "LANG=C awk 'function snap(   line,n,id,i){n=0;id=0;while((getline line < \"/proc/stat\")>0){if(line ~ /^cpu /){split(line,f);id=f[5]+0;for(i=2;i<=9;i++)n+=f[i];break}}close(\"/proc/stat\");return n\" \"id}BEGIN{split(snap(),a,\" \");if(a[1]+0<=0)exit 1;system(\"sleep 1\");split(snap(),b,\" \");dt=b[1]-a[1];if(dt<=0)exit 1;printf \"%.2f\\n\",(dt-(b[2]-a[2]))*100/dt}'"
+                + " || LANG=C top -bn2 -d 1 2>/dev/null | grep -E 'Cpu\\(s\\)|%Cpu' | tail -1");
         CMD.put("vmstat", "vmstat 1 2 2>/dev/null | tail -1");
         CMD.put("listener", "bash -lc 'command -v lsnrctl >/dev/null 2>&1 && lsnrctl status 2>&1 | head -30 || echo __LSNR_MISSING__'");
         CMD.put("crs", "bash -lc 'command -v crsctl >/dev/null 2>&1 && crsctl stat res -t 2>&1 | head -200 || echo __CRS_MISSING__'");
@@ -109,7 +111,7 @@ public class HostCollector {
             Metrics.push(metrics, "host_mem_used_pct", HostParsers.parseMemPct(run(ssh, "mem", cmdTimeout).stdout()), "%");
 
             SshSession.Result cpu = run(ssh, "cpu", cmdTimeout);
-            Double cpuPct = HostParsers.parseCpuPct(cpu.stdout());
+            Double cpuPct = HostParsers.parseCpuSample(cpu.stdout());
             if (cpuPct == null) {
                 cpuPct = HostParsers.parseVmstatCpu(run(ssh, "vmstat", cmdTimeout).stdout());
             }

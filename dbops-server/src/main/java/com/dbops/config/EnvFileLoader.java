@@ -64,7 +64,10 @@ public final class EnvFileLoader {
                     val = val.substring(0, hash).strip();
                 }
             }
-            if (System.getenv(key) == null && System.getProperty(key) == null) {
+            // 空字符串不算“已配置”。start 脚本若导出了 DBOPS_SECRET_KEY=，不能挡住 .env 里的真实密钥。
+            String env = System.getenv(key);
+            String prop = System.getProperty(key);
+            if ((env == null || env.isBlank()) && (prop == null || prop.isBlank())) {
                 System.setProperty(key, val);
                 n++;
             }

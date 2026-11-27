@@ -16,6 +16,8 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=scripts/python39-home.sh
+. "$ROOT/scripts/python39-home.sh"
 LOGD="$ROOT/logs"; PIDD="$LOGD/pids"; mkdir -p "$LOGD" "$PIDD"
 JAR="$ROOT/dbops-server/target/dbops-server.jar"
 ENV_FILE="${DBOPS_ENV_FILE:-$ROOT/backend/.env}"

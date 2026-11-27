@@ -112,6 +112,7 @@ function startBackupRetentionScheduler() {
     console.warn('[platform-backup-retention] 无效 Cron，跳过:', expr);
     return;
   }
+  const { platformTz } = require('../utils/platformClock');
   cron.schedule(expr, () => {
     isEnabled()
       .then((on) => {
@@ -119,7 +120,7 @@ function startBackupRetentionScheduler() {
         return runRetentionOnce(false);
       })
       .catch((e) => console.error('[platform-backup-retention]', e.message || e));
-  });
+  }, { timezone: platformTz() });
   started = true;
   isEnabled().then((on) => {
     console.log('[platform-backup-retention] 已启动 Cron:', expr, 'enabled=', on);

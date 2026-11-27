@@ -10,7 +10,8 @@ const CMD = {
   mem: "free -m 2>/dev/null | awk '/^Mem:/ {print $2,$3,$4}'",
   swap: "free -m 2>/dev/null | awk '/^Swap:/ {print $2,$3}'",
   df: "LANG=C df -P 2>/dev/null | awk 'NR>1 {gsub(/%/,\"\",$5); print $1,$5,$6}'",
-  cpu: "LANG=C top -bn1 2>/dev/null | grep -E 'Cpu\\(s\\)|%Cpu' | head -1",
+  // top -bn1 第一帧是开机至今平均。先采 1 秒 /proc/stat；失败再取 top 第二帧。
+  cpu: "LANG=C awk 'function snap(   line,n,id,i){n=0;id=0;while((getline line < \"/proc/stat\")>0){if(line ~ /^cpu /){split(line,f);id=f[5]+0;for(i=2;i<=9;i++)n+=f[i];break}}close(\"/proc/stat\");return n\" \"id}BEGIN{split(snap(),a,\" \");if(a[1]+0<=0)exit 1;system(\"sleep 1\");split(snap(),b,\" \");dt=b[1]-a[1];if(dt<=0)exit 1;printf \"%.2f\\n\",(dt-(b[2]-a[2]))*100/dt}' || LANG=C top -bn2 -d 1 2>/dev/null | grep -E 'Cpu\\(s\\)|%Cpu' | tail -1",
   vmstat: 'vmstat 1 2 2>/dev/null | tail -1',
   listener: "bash -lc 'command -v lsnrctl >/dev/null 2>&1 && lsnrctl status 2>&1 | head -30 || echo __LSNR_MISSING__'",
   crs: "bash -lc 'command -v crsctl >/dev/null 2>&1 && crsctl stat res -t 2>&1 | head -80 || echo __CRS_MISSING__'",
@@ -18,6 +19,25 @@ const CMD = {
   gs_om: "bash -lc 'command -v gs_om >/dev/null 2>&1 && gs_om -t status --detail 2>&1 | head -120 || echo __GS_OM_MISSING__'",
   gs_ctl: "bash -lc 'command -v gs_ctl >/dev/null 2>&1 && gs_ctl query 2>&1 | head -40 || echo __GS_CTL_MISSING__'",
 };
+
+/** 与 Java HostParsers.parseCpuSample 一致：纯数字为 1 秒采样；top 多帧只认最后一行 */
+function parseCpuSample(text) {
+  const lines = String(text || '').split('\n').map(s => s.trim()).filter(Boolean);
+  const last = lines.length ? lines[lines.length - 1] : '';
+  if (!last) return null;
+  if (/^\d+(\.\d+)?$/.test(last)) {
+    const n = Number(last);
+    return Number.isFinite(n) ? Math.min(100, Math.max(0, n)) : null;
+  }
+  const top = parseCpuPct(last);
+  if (top != null) return top;
+  const parts = last.split(/\s+/);
+  if (parts.length >= 15) {
+    const idle = Number(parts[14]);
+    if (Number.isFinite(idle)) return Math.min(100, Math.max(0, 100 - idle));
+  }
+  return null;
+}
 
 function parseCpuPct(line) {
   const s = String(line || '');
@@ -31,6 +51,22 @@ function parseCpuPct(line) {
   return null;
 }
 
+/** 与 Java HostParsers.ignoreFs 一致：内存盘、loop 光盘镜像、snap 不计入磁盘使用率 */
+function ignoreFs(device, mount) {
+  const d = String(device || '').toLowerCase();
+  const m = String(mount || '');
+  if (m === '/dev' || m.startsWith('/dev/') || m.startsWith('/sys') || m.startsWith('/proc')
+    || m.startsWith('/run') || m === '/snap' || m.startsWith('/snap/')
+    || m === '/dvd' || m.startsWith('/dvd/') || m === '/cdrom' || m.startsWith('/cdrom/')
+    || m === '/media' || m.startsWith('/media/')) return true;
+  return d === 'tmpfs' || d === 'devtmpfs' || d === 'overlay' || d === 'squashfs'
+    || d === 'iso9660' || d === 'udf' || d === 'ramfs' || d === 'autofs'
+    || d === 'nsfs' || d === 'tracefs' || d === 'cgroup' || d === 'cgroup2'
+    || d === 'configfs' || d === 'debugfs' || d === 'securityfs' || d === 'pstore'
+    || d === 'bpf' || d === 'hugetlbfs' || d === 'mqueue' || d === 'fusectl'
+    || d.startsWith('/dev/loop') || d.startsWith('loop');
+}
+
 function parseDf(text) {
   const rows = [];
   let maxPct = null;
@@ -40,7 +76,7 @@ function parseDf(text) {
     const mount = p[2];
     const pct = Number(p[1]);
     if (!Number.isFinite(pct)) continue;
-    if (mount === '/dev' || mount.startsWith('/sys') || mount.startsWith('/run/user')) continue;
+    if (ignoreFs(p[0], mount)) continue;
     rows.push({ mount, usedPct: pct, device: p[0] });
     if (maxPct == null || pct > maxPct) maxPct = pct;
   }
@@ -247,7 +283,7 @@ async function collectHostMetrics(instanceId, dbType) {
   }
 
   const cpu = await runCmd(ssh, 'cpu');
-  let cpuPct = parseCpuPct(cpu.stdout);
+  let cpuPct = parseCpuSample(cpu.stdout);
   if (cpuPct == null && cpu.ok) {
     const vm = await runCmd(ssh, 'vmstat');
     if (vm.ok) {

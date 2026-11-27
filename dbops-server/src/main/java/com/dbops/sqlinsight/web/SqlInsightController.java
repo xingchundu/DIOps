@@ -129,6 +129,7 @@ public class SqlInsightController {
         m.put("dbTimeHours", dbTimeHours);
         m.put("dbTimeTop", db.query("SELECT * FROM (SELECT s.ASSET_ID, s.INSTANCE_ID, SUM(s.D_EXEC) EXECS, ROUND(SUM(s.D_ELAPSED_MS), 0) TOTAL_MS, "
                 + "ROUND(SUM(s.D_ELAPSED_MS) / NULLIF(SUM(s.D_EXEC), 0), 2) AVG_MS, MAX(a.STMT_TYPE) STMT_TYPE, "
+                + "(SELECT MAX(src.NATIVE_ID) KEEP (DENSE_RANK LAST ORDER BY src.LAST_SEEN) FROM DI_SQL_ASSET_SOURCE src WHERE src.ASSET_ID = s.ASSET_ID AND src.INSTANCE_ID = s.INSTANCE_ID) NATIVE_SQL_ID, "
                 + "MAX(DBMS_LOB.SUBSTR(a.SAMPLE_SQL, 300, 1)) SQL_TEXT FROM DI_SQL_STATS_MIN s JOIN DI_SQL_ASSET a ON a.ASSET_ID = s.ASSET_ID "
                 + "WHERE s.WINDOW_START >= LOCALTIMESTAMP - INTERVAL '" + dbTimeHours + "' HOUR" + ic.replace("INSTANCE_ID", "s.INSTANCE_ID")
                 + " GROUP BY s.ASSET_ID, s.INSTANCE_ID ORDER BY TOTAL_MS DESC NULLS LAST) WHERE ROWNUM <= 10"));
@@ -145,6 +146,7 @@ public class SqlInsightController {
     @GetMapping("/assets")
     public Map<String, Object> assets(@RequestParam(required = false) Long instanceId, @RequestParam(required = false) String keyword,
                                       @RequestParam(required = false) String isCore, @RequestParam(required = false) String staticRisk,
+                                      @RequestParam(required = false) String lifecycle, @RequestParam(required = false) String qualityTag,
                                       @RequestParam(required = false, defaultValue = "1") String page,
                                       @RequestParam(required = false, defaultValue = "20") String size) {
         List<String> where = new ArrayList<>(List.of("1=1"));
@@ -154,10 +156,21 @@ public class SqlInsightController {
             args.add(instanceId);
         }
         if (!Values.isBlank(keyword)) {
-            where.add("(DBMS_LOB.INSTR(LOWER(a.NORMALIZED_SQL), ?) > 0 OR a.TABLES LIKE ? OR a.FINGERPRINT = ?)");
+            where.add("(DBMS_LOB.INSTR(LOWER(a.NORMALIZED_SQL), ?) > 0 OR a.TABLES LIKE ? OR a.FINGERPRINT = ? "
+                    + "OR EXISTS (SELECT 1 FROM DI_SQL_ASSET_SOURCE ks WHERE ks.ASSET_ID = a.ASSET_ID AND (ks.NATIVE_ID = ? OR ks.NATIVE_ID LIKE ?)))");
             args.add(keyword.toLowerCase(Locale.ROOT));
             args.add("%" + keyword.toUpperCase(Locale.ROOT) + "%");
             args.add(keyword);
+            args.add(keyword.trim());
+            args.add("%|" + keyword.trim() + "%");
+        }
+        if (!Values.isBlank(lifecycle)) {
+            where.add("NVL(a.LIFECYCLE, CASE WHEN a.FIRST_SEEN >= SYSTIMESTAMP - INTERVAL '1' DAY THEN 'NEW' WHEN a.LAST_SEEN < SYSTIMESTAMP - INTERVAL '7' DAY THEN 'DORMANT' ELSE 'ACTIVE' END) = ?");
+            args.add(lifecycle.toUpperCase(Locale.ROOT));
+        }
+        if (!Values.isBlank(qualityTag)) {
+            where.add("a.QUALITY_TAG = ?");
+            args.add(qualityTag);
         }
         if ("1".equals(isCore)) {
             where.add("a.IS_CORE = 1");
@@ -167,7 +180,10 @@ public class SqlInsightController {
             args.add(staticRisk);
         }
         String sql = "SELECT a.ASSET_ID, a.DB_TYPE, a.SCHEMA_NAME, a.FINGERPRINT, a.STMT_TYPE, a.TABLES, a.PARSE_STATUS, a.STATIC_STATUS, "
-                + "a.STATIC_RISK, a.IS_CORE, a.BIZ_TYPE, a.OWNER, a.FIRST_SEEN, a.LAST_SEEN, DBMS_LOB.SUBSTR(a.SAMPLE_SQL, 500, 1) SQL_TEXT, "
+                + "a.STATIC_RISK, a.IS_CORE, a.BIZ_TYPE, a.OWNER, a.NOTE, a.SCENE, a.APP_VERSION, a.QUALITY_TAG, a.LIFECYCLE, "
+                + "NVL(a.LIFECYCLE, CASE WHEN a.FIRST_SEEN >= SYSTIMESTAMP - INTERVAL '1' DAY THEN 'NEW' WHEN a.LAST_SEEN < SYSTIMESTAMP - INTERVAL '7' DAY THEN 'DORMANT' ELSE 'ACTIVE' END) LIFECYCLE_EFF, "
+                + "a.FIRST_SEEN, a.LAST_SEEN, DBMS_LOB.SUBSTR(a.SAMPLE_SQL, 500, 1) SQL_TEXT, "
+                + "(SELECT MAX(src.NATIVE_ID) KEEP (DENSE_RANK LAST ORDER BY src.LAST_SEEN) FROM DI_SQL_ASSET_SOURCE src WHERE src.ASSET_ID = a.ASSET_ID) NATIVE_SQL_ID, "
                 + "(SELECT COUNT(*) FROM DI_SQL_PROBLEM p WHERE p.ASSET_ID = a.ASSET_ID AND p.STATUS = 'OPEN') OPEN_PROBLEMS, "
                 + "(SELECT COUNT(*) FROM DI_SQL_ANOMALY x WHERE x.ASSET_ID = a.ASSET_ID AND x.STATUS = 'OPEN') OPEN_ANOMALIES "
                 + "FROM DI_SQL_ASSET a WHERE " + String.join(" AND ", where) + " ORDER BY a.LAST_SEEN DESC";
@@ -223,12 +239,22 @@ public class SqlInsightController {
         if (biz != null && !biz.isBlank() && !InstanceDirectory.BIZ_TYPES.contains(biz.toUpperCase(Locale.ROOT))) {
             return R.badRequest("业务类型只能是 OLTP / BATCH / REPORT");
         }
+        String life = Values.str(b.get("lifecycle"));
+        if (life != null && !life.isBlank() && !List.of("NEW", "ACTIVE", "DEPRECATED", "OFFLINE").contains(life.toUpperCase(Locale.ROOT))) {
+            return R.badRequest("生命周期只能是 NEW / ACTIVE / DEPRECATED / OFFLINE");
+        }
         db.update("UPDATE DI_SQL_ASSET SET IS_CORE=NVL(?, IS_CORE), BIZ_TYPE=CASE WHEN ? = 1 THEN ? ELSE BIZ_TYPE END, "
-                        + "OWNER=CASE WHEN ? = 1 THEN ? ELSE OWNER END, NOTE=CASE WHEN ? = 1 THEN ? ELSE NOTE END WHERE ASSET_ID=?",
+                        + "OWNER=CASE WHEN ? = 1 THEN ? ELSE OWNER END, NOTE=CASE WHEN ? = 1 THEN ? ELSE NOTE END, "
+                        + "SCENE=CASE WHEN ? = 1 THEN ? ELSE SCENE END, APP_VERSION=CASE WHEN ? = 1 THEN ? ELSE APP_VERSION END, "
+                        + "QUALITY_TAG=CASE WHEN ? = 1 THEN ? ELSE QUALITY_TAG END, LIFECYCLE=CASE WHEN ? = 1 THEN ? ELSE LIFECYCLE END WHERE ASSET_ID=?",
                 b.containsKey("isCore") ? (Values.truthy(b.get("isCore")) ? 1 : 0) : null,
                 b.containsKey("bizType") ? 1 : 0, biz == null || biz.isBlank() ? null : biz.toUpperCase(Locale.ROOT),
                 b.containsKey("owner") ? 1 : 0, Values.truncate(Values.str(b.get("owner")), 64),
-                b.containsKey("note") ? 1 : 0, Values.truncate(Values.str(b.get("note")), 512), id);
+                b.containsKey("note") ? 1 : 0, Values.truncate(Values.str(b.get("note")), 512),
+                b.containsKey("scene") ? 1 : 0, Values.truncate(Values.str(b.get("scene")), 64),
+                b.containsKey("appVersion") ? 1 : 0, Values.truncate(Values.str(b.get("appVersion")), 64),
+                b.containsKey("qualityTag") ? 1 : 0, Values.truncate(Values.str(b.get("qualityTag")), 64),
+                b.containsKey("lifecycle") ? 1 : 0, life == null || life.isBlank() ? null : life.toUpperCase(Locale.ROOT), id);
         assets.invalidate();
         audit.log(u, "SQLINSIGHT_ASSET_UPDATE", "DI_SQL_ASSET", String.valueOf(id), "SUCCESS", Json.write(b));
         return R.msg("已保存");
@@ -265,7 +291,9 @@ public class SqlInsightController {
         }
         filter(where, args, "p.RULE_CODE", ruleCode);
         filter(where, args, "p.SEVERITY", severity);
-        return R.ok(db.queryPage("SELECT p.*, i.INSTANCE_NAME, r.RULE_NAME, DBMS_LOB.SUBSTR(a.SAMPLE_SQL, 300, 1) SQL_TEXT FROM DI_SQL_PROBLEM p "
+        return R.ok(db.queryPage("SELECT p.*, i.INSTANCE_NAME, r.RULE_NAME, DBMS_LOB.SUBSTR(a.SAMPLE_SQL, 300, 1) SQL_TEXT, "
+                + "(SELECT MAX(src.NATIVE_ID) KEEP (DENSE_RANK LAST ORDER BY src.LAST_SEEN) FROM DI_SQL_ASSET_SOURCE src WHERE src.ASSET_ID = p.ASSET_ID AND src.INSTANCE_ID = p.INSTANCE_ID) NATIVE_SQL_ID "
+                + "FROM DI_SQL_PROBLEM p "
                 + "LEFT JOIN CMDB_INSTANCE i ON i.INSTANCE_ID = p.INSTANCE_ID LEFT JOIN DI_SQL_ASSET a ON a.ASSET_ID = p.ASSET_ID "
                 + "LEFT JOIN DI_SQL_RULE r ON r.RULE_CODE = p.RULE_CODE AND r.SCOPE_TYPE = 'GLOBAL' WHERE " + String.join(" AND ", where)
                 + " ORDER BY p.LAST_SEEN DESC", args, page, size));
@@ -306,6 +334,7 @@ public class SqlInsightController {
         filter(where, args, "x.ANOMALY_TYPE", type);
         filter(where, args, "x.SEVERITY", severity);
         return R.ok(db.queryPage("SELECT x.*, i.INSTANCE_NAME, DBMS_LOB.SUBSTR(a.SAMPLE_SQL, 300, 1) SQL_TEXT, "
+                + "(SELECT MAX(src.NATIVE_ID) KEEP (DENSE_RANK LAST ORDER BY src.LAST_SEEN) FROM DI_SQL_ASSET_SOURCE src WHERE src.ASSET_ID = x.ASSET_ID AND src.INSTANCE_ID = x.INSTANCE_ID) NATIVE_SQL_ID, "
                 + "(SELECT MAX(d.PRIMARY_CAUSE) KEEP (DENSE_RANK LAST ORDER BY d.CREATED_AT) FROM DI_SQL_ANOMALY_DIAGNOSIS d "
                 + "WHERE d.ANOMALY_ID = x.ANOMALY_ID AND d.STATUS = 'DONE') PRIMARY_CAUSE FROM DI_SQL_ANOMALY x "
                 + "LEFT JOIN CMDB_INSTANCE i ON i.INSTANCE_ID = x.INSTANCE_ID LEFT JOIN DI_SQL_ASSET a ON a.ASSET_ID = x.ASSET_ID WHERE "
@@ -459,7 +488,8 @@ public class SqlInsightController {
             collect.reprobe(instanceId);
         }
         Map<String, Object> summary = new LinkedHashMap<>(collect.collect(instanceId));
-        summary.put("topProblems", db.query("SELECT p.PROBLEM_ID, p.RULE_CODE, p.SEVERITY, p.DETAIL, p.ASSET_ID, a.SAMPLE_SQL SQL_TEXT, a.SCHEMA_NAME "
+        summary.put("topProblems", db.query("SELECT p.PROBLEM_ID, p.RULE_CODE, p.SEVERITY, p.DETAIL, p.ASSET_ID, a.SAMPLE_SQL SQL_TEXT, a.SCHEMA_NAME, "
+                + "(SELECT MAX(src.NATIVE_ID) KEEP (DENSE_RANK LAST ORDER BY src.LAST_SEEN) FROM DI_SQL_ASSET_SOURCE src WHERE src.ASSET_ID = p.ASSET_ID AND src.INSTANCE_ID = p.INSTANCE_ID) NATIVE_SQL_ID "
                 + "FROM DI_SQL_PROBLEM p JOIN DI_SQL_ASSET a ON a.ASSET_ID = p.ASSET_ID WHERE p.INSTANCE_ID=? AND p.STATUS='OPEN' "
                 + "ORDER BY DECODE(p.SEVERITY, 'CRITICAL', 1, 'WARNING', 2, 3), p.METRIC_VALUE DESC NULLS LAST FETCH FIRST 10 ROWS ONLY", instanceId));
         return R.ok(summary);

@@ -45,7 +45,7 @@ function applySecurityMiddleware(app, { allowedOrigins } = {}) {
 
   const globalMax = parseInt(process.env.RATE_LIMIT_MAX || '1000', 10);
   app.use(rateLimit({
-    windowMs: 15 * 60 * 1000,
+    windowMs: 5 * 60 * 1000,
     max: Number.isFinite(globalMax) ? Math.max(100, globalMax) : 1000,
     standardHeaders: true,
     legacyHeaders: false,

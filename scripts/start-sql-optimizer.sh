@@ -3,6 +3,8 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=python39-home.sh
+. "$ROOT/scripts/python39-home.sh"
 LOGD="${LOGD:-$ROOT/logs}"
 PIDD="${PIDD:-$LOGD/pids}"
 AGENT_DIR="$ROOT/backend/sql-optimizer-agent"
@@ -29,7 +31,7 @@ pid_alive() {
 
 resolve_python() {
   local c bin ver
-  for c in "$ROOT/deps/python/bin/python3.9" "$ROOT/deps/python/bin/python3" python3.9 python3 python; do
+  for c in "$DIOPS_PYTHON_HOME/bin/python3.9" "$ROOT/deps/python/bin/python3.9" "$ROOT/deps/python/bin/python3" python3.9 python3 python; do
     if [ -x "$c" ]; then bin="$c"
     elif command -v "$c" >/dev/null 2>&1; then bin="$(command -v "$c")"
     else continue

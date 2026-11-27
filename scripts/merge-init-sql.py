@@ -67,6 +67,34 @@ def ensure_sqlplus_define_off(text: str) -> str:
     return "".join(lines[:insert_at]) + block + "".join(lines[insert_at:])
 
 
+CREATE_TABLE_RE = re.compile(r"CREATE TABLE\s+([A-Za-z0-9_]+)\s*\(", re.IGNORECASE)
+
+
+def verify_migration_tables_in_init(sql_dir: Path, init_path: Path, to_merge: list) -> list:
+    """任一 migration 的 CREATE TABLE 若不在 init.sql 中则报错（供打包门禁）。"""
+    init_text = init_path.read_text(encoding="utf-8")
+    init_tables = set(CREATE_TABLE_RE.findall(init_text))
+    errs = []
+    checked = set(to_merge) | set(MARKER_RE.findall(init_text))
+    for p in sorted(sql_dir.glob("migration_*.sql")):
+        if p.name in EXCLUDE_WARN:
+            continue
+        mig_tables = set(CREATE_TABLE_RE.findall(p.read_text(encoding="utf-8")))
+        if not mig_tables:
+            continue
+        missing = mig_tables - init_tables
+        if missing:
+            hint = (
+                f"加入 {sql_dir / 'init-merge.list'}"
+                if p.name not in checked
+                else "init-merge 已引用但仍缺表，请检查合并是否失败"
+            )
+            errs.append(
+                f"{p.name} 的表 {sorted(missing)} 不在 init.sql（{hint}）"
+            )
+    return errs
+
+
 def load_list(list_path):
     if not list_path.is_file():
         return []
@@ -132,6 +160,12 @@ def main() -> int:
     else:
         print("[merge-init-sql] init.sql 已包含列表中的全部脚本")
 
+    table_errs = verify_migration_tables_in_init(sql_dir, init_path, to_merge)
+    if table_errs:
+        for e in table_errs:
+            print(f"[ERROR] {e}", file=sys.stderr)
+        return 1
+
     if os.environ.get("INIT_MERGE_WARN_UNLISTED") == "1":
         listed = set(to_merge)
         marked = set(MARKER_RE.findall(init_path.read_text(encoding="utf-8")))
@@ -140,7 +174,7 @@ def main() -> int:
                 continue
             print(
                 f"[WARN] 未并入 init.sql: {p.name} "
-                f"（加入 {list_path.name} 或 sql/migrations/ 供升级）",
+                f"（加入 {list_path.name} 或仅作存量升级脚本）",
                 file=sys.stderr,
             )
     return 0

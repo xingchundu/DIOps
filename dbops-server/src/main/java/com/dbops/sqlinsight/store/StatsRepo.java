@@ -178,6 +178,54 @@ public class StatsRepo {
         return m;
     }
 
+    /**
+     * 把最近 hoursBack 小时的分钟统计汇总为实例级小时行（SQL CPU / DB Time / 执行次数 + 主机 CPU 均值）。
+     * 分钟数据只保留 sqlinsight.retention.stats_days（默认 35 天），小时汇总单独保留（默认 400 天），
+     * 「今日 vs 昨日 vs 上月」同期对比不再依赖分钟数据是否还在。幂等（MERGE）。
+     */
+    public int rollupHours(int hoursBack) {
+        int h = Math.max(1, Math.min(hoursBack, 24 * 60));
+        int n = db.update("MERGE INTO DI_SQL_STATS_HOUR t USING (SELECT INSTANCE_ID, TRUNC(WINDOW_START, 'HH24') HS, SUM(D_CPU_MS) CPU, "
+                + "SUM(D_ELAPSED_MS) ET, SUM(D_EXEC) EX FROM DI_SQL_STATS_MIN WHERE WINDOW_START >= TRUNC(LOCALTIMESTAMP, 'HH24') - NUMTODSINTERVAL(?, 'HOUR') "
+                + "GROUP BY INSTANCE_ID, TRUNC(WINDOW_START, 'HH24')) s ON (t.INSTANCE_ID = s.INSTANCE_ID AND t.HOUR_START = s.HS) "
+                + "WHEN MATCHED THEN UPDATE SET t.SQL_CPU_MS = s.CPU, t.DB_TIME_MS = s.ET, t.EXECS = s.EX, t.UPDATED_AT = SYSTIMESTAMP "
+                + "WHEN NOT MATCHED THEN INSERT (INSTANCE_ID, HOUR_START, SQL_CPU_MS, DB_TIME_MS, EXECS) VALUES (s.INSTANCE_ID, s.HS, s.CPU, s.ET, s.EX)", h);
+        // 主机 CPU：来自监控采样；没有 SQL 行的小时（实例无采集）也补一行，便于单看主机 CPU
+        db.updateQuietly("MERGE INTO DI_SQL_STATS_HOUR t USING (SELECT INSTANCE_ID, TRUNC(COLLECTED_AT, 'HH24') HS, AVG(METRIC_CPU) CPU "
+                + "FROM MONITOR_METRIC_SAMPLE WHERE REACHABLE = 1 AND METRIC_CPU IS NOT NULL AND COLLECTED_AT >= TRUNC(LOCALTIMESTAMP, 'HH24') - NUMTODSINTERVAL(?, 'HOUR') "
+                + "GROUP BY INSTANCE_ID, TRUNC(COLLECTED_AT, 'HH24')) s ON (t.INSTANCE_ID = s.INSTANCE_ID AND t.HOUR_START = s.HS) "
+                + "WHEN MATCHED THEN UPDATE SET t.HOST_CPU_PCT = ROUND(s.CPU, 1) "
+                + "WHEN NOT MATCHED THEN INSERT (INSTANCE_ID, HOUR_START, HOST_CPU_PCT) VALUES (s.INSTANCE_ID, s.HS, ROUND(s.CPU, 1))", h);
+        return n;
+    }
+
+    public int purgeRollup(int keepDays) {
+        return db.update("DELETE FROM DI_SQL_STATS_HOUR WHERE HOUR_START < LOCALTIMESTAMP - NUMTODSINTERVAL(?, 'DAY')", keepDays);
+    }
+
+    /**
+     * 活动会话的等待事件累计（所有活动会话都记，不只命中规则的）。
+     * @param byAsset assetId → (等待事件 → {命中采样次数, 已等待秒数累计})
+     */
+    public void saveWaits(long instanceId, Map<Long, Map<String, double[]>> byAsset) {
+        List<Object[]> batch = new ArrayList<>();
+        for (Map.Entry<Long, Map<String, double[]>> a : byAsset.entrySet()) {
+            if (a.getKey() == null || a.getKey() <= 0) {
+                continue;
+            }
+            for (Map.Entry<String, double[]> e : a.getValue().entrySet()) {
+                batch.add(new Object[]{instanceId, a.getKey(), Values.truncate(e.getKey(), 128), e.getValue()[0], e.getValue()[1], e.getValue()[0], e.getValue()[1]});
+            }
+        }
+        if (batch.isEmpty()) {
+            return;
+        }
+        db.jdbc().batchUpdate("MERGE INTO DI_SQL_WAIT_SAMPLE t USING (SELECT ? AS I, ? AS A, ? AS E FROM DUAL) s "
+                + "ON (t.INSTANCE_ID = s.I AND t.ASSET_ID = s.A AND t.WAIT_EVENT = s.E) "
+                + "WHEN MATCHED THEN UPDATE SET t.SAMPLES = NVL(t.SAMPLES, 0) + ?, t.WAIT_SEC = NVL(t.WAIT_SEC, 0) + ?, t.LAST_SEEN = SYSTIMESTAMP "
+                + "WHEN NOT MATCHED THEN INSERT (INSTANCE_ID, ASSET_ID, WAIT_EVENT, SAMPLES, WAIT_SEC) VALUES (s.I, s.A, s.E, ?, ?)", batch);
+    }
+
     /** 过期数据清理（分批删除，避免长事务） */
     public int purge(int keepDays) {
         int total = 0;
@@ -190,6 +238,9 @@ public class StatsRepo {
         }
         db.updateQuietly("DELETE FROM DI_SQL_ASSET_SOURCE WHERE LAST_SEEN < SYSTIMESTAMP - NUMTODSINTERVAL(?, 'DAY')", keepDays);
         db.updateQuietly("DELETE FROM DI_SQL_PROBLEM WHERE STATUS='RESOLVED' AND RESOLVED_AT < SYSTIMESTAMP - INTERVAL '90' DAY");
+        db.updateQuietly("DELETE FROM DI_SQL_WAIT_SAMPLE WHERE LAST_SEEN < SYSTIMESTAMP - NUMTODSINTERVAL(?, 'DAY')", keepDays);
+        db.updateQuietly("DELETE FROM DI_SQL_PLAN_TEXT WHERE CAPTURED_AT < SYSTIMESTAMP - NUMTODSINTERVAL(?, 'DAY') AND NOT EXISTS "
+                + "(SELECT 1 FROM DI_SQL_RETEST r WHERE r.INSTANCE_ID = DI_SQL_PLAN_TEXT.INSTANCE_ID AND r.ASSET_ID = DI_SQL_PLAN_TEXT.ASSET_ID)", Math.max(keepDays, 90));
         return total;
     }
 }

@@ -10,6 +10,7 @@
 #   - npm run build         -> frontend/dist（前端静态资源）
 #   - merge-init-sql.sh     -> sql/init.sql
 #   - rsync backend/        -> 最新 Node 兼容层源码与 node_modules
+#   - orasqlx              -> 只打 Linux 可执行文件，不打 Go 源码；客户机不需要 Go
 #   - 打包前删除 release/diops-offline-*.tar.gz 及 release/diops 旧目录
 #
 # 打包机准备（有网 Linux x64）：
@@ -65,13 +66,25 @@ if ! command -v node >/dev/null 2>&1 || ! command -v npm >/dev/null 2>&1; then
   echo "[ERROR] 未找到 node/npm。请先执行 bash scripts/install-deps.sh --online"
   exit 1
 fi
-if [ ! -x "$ROOT/deps/python/bin/python3.9" ]; then
+deps_python_bin() {
+  local base="$ROOT/deps/python"
+  if [ -L "$base" ]; then
+    base="$(readlink -f "$base" 2>/dev/null || echo "$base")"
+  fi
+  local p="$base/bin/python3.9"
+  if [ -x "$p" ]; then
+    echo "$p"
+    return 0
+  fi
+  return 1
+}
+if ! deps_python_bin >/dev/null; then
   if [ -f "$ROOT/scripts/ensure-deps-python39.sh" ]; then
     echo "[INFO] 缺少 deps/python/bin/python3.9，尝试自动下载 ..."
     bash "$ROOT/scripts/ensure-deps-python39.sh" || true
   fi
 fi
-if [ ! -x "$ROOT/deps/python/bin/python3.9" ]; then
+if ! deps_python_bin >/dev/null; then
   echo "[ERROR] 缺少 deps/python/bin/python3.9（客户包 SQL/AI 模块需要 CPython 3.9，离线 wheel 为 cp39）"
   echo "        修复: bash scripts/ensure-deps-python39.sh"
   echo "        或把 Python 3.9 独立发行版解压到 deps/python，确保可执行 deps/python/bin/python3.9"
@@ -81,7 +94,7 @@ wheels_ready() {
   [ -d "$ROOT/offline-bundle/python/wheels" ] && ls "$ROOT/offline-bundle/python/wheels"/*.whl >/dev/null 2>&1
 }
 if ! wheels_ready; then
-  if [ -f "$ROOT/scripts/prepare-offline-bundle.sh" ] && [ -x "$ROOT/deps/python/bin/python3.9" ]; then
+  if [ -f "$ROOT/scripts/prepare-offline-bundle.sh" ] && deps_python_bin >/dev/null; then
     echo "[INFO] 缺少 offline-bundle/python/wheels，自动下载（--wheels-only）..."
     bash "$ROOT/scripts/prepare-offline-bundle.sh" --wheels-only || true
   fi
@@ -172,7 +185,10 @@ cp -a "$ROOT/frontend/dist/." "$STAGE/frontend/"
 find "$STAGE/frontend" -name '*.map' -delete
 test -f "$STAGE/frontend/index.html"
 echo "      合并 migration -> 单一 sql/init.sql（客户包不打包零散 migration）..."
-bash "$ROOT/scripts/merge-init-sql.sh"
+bash "$ROOT/scripts/merge-init-sql.sh" || {
+  echo "[ERROR] init.sql 未通过全量校验（见 merge-init-sql 输出）；请更新 init-merge.list 后重试"
+  exit 1
+}
 rm -rf "$STAGE/sql"
 mkdir -p "$STAGE/sql"
 cp -a "$ROOT/backend/sql/init.sql" "$STAGE/sql/init.sql"
@@ -191,6 +207,37 @@ echo "[5/8] Java 包 ..."
 rm -rf "$STAGE/runtime/jre"
 cp -a "$ROOT/deps/jre" "$STAGE/runtime/jre"
 
+# Oracle 深度诊断只交付一个可执行文件。源码留在打包机，客户机不安装 Go。
+pack_orasqlx() {
+  local arch="amd64" uname_m bin magic
+  uname_m="$(uname -m)"
+  case "$uname_m" in
+    aarch64|arm64) arch="arm64" ;;
+    x86_64|amd64) arch="amd64" ;;
+    *)
+      echo "[ERROR] 不支持的打包机架构: $uname_m（需要 x86_64 或 aarch64 的 orasqlx 执行文件）"
+      exit 1
+      ;;
+  esac
+  bin="$ROOT/backend/tools/orasqlx/dist/orasqlx-linux-${arch}"
+  if [ ! -f "$bin" ]; then
+    echo "[ERROR] 缺少 orasqlx 执行文件: $bin"
+    echo "        在打包机编译一次（客户服务器不要安装 Go）："
+    echo "          cd backend/tools/orasqlx && ./build.sh"
+    exit 1
+  fi
+  magic="$(od -An -t x1 -N 4 "$bin" | tr -d ' \n')"
+  if [ "$magic" != "7f454c46" ]; then
+    echo "[ERROR] $bin 不是 Linux ELF 可执行文件"
+    exit 1
+  fi
+  rm -rf "$STAGE/backend/tools/orasqlx"
+  mkdir -p "$STAGE/backend/tools/orasqlx"
+  cp -a "$bin" "$STAGE/backend/tools/orasqlx/orasqlx"
+  chmod 755 "$STAGE/backend/tools/orasqlx/orasqlx"
+  echo "      orasqlx 执行文件 -> backend/tools/orasqlx/orasqlx ($(uname -m), $(wc -c < "$bin") bytes)"
+}
+
 echo "[6/8] Node 兼容层（同步当前 backend/ 源码）、Python 模块、运行时 ..."
 rsync -a \
   --exclude 'ai-ops-agent' \
@@ -201,7 +248,9 @@ rsync -a \
   --exclude 'data' \
   --exclude 'reports' \
   --exclude 'node_modules/.cache' \
+  --exclude 'tools/orasqlx' \
   "$ROOT/backend/" "$STAGE/backend/"
+pack_orasqlx
 mkdir -p "$STAGE/backend/data/backup" "$STAGE/backend/reports"
 
 STAGE_SECURITY="$STAGE/backend/src/middleware/security.js" python3 - <<'PY'
@@ -242,7 +291,21 @@ cp -a "$ROOT/backend/sql-optimizer-agent/"*.py "$ROOT/backend/sql-optimizer-agen
 cp -a "$ROOT/backend/ai-ops-agent/"*.py "$ROOT/backend/ai-ops-agent/requirements.txt" "$STAGE/modules/ai-ops/"
 rm -rf "$STAGE/runtime/node" "$STAGE/runtime/python" "$STAGE/runtime/wheels"
 cp -a "$ROOT/deps/node" "$STAGE/runtime/node"
-cp -a "$ROOT/deps/python" "$STAGE/runtime/python"
+# deps/python 常为符号链接（如 -> /opt/python39）；必须解引用为实体目录，否则客户机无该路径时 runtime/python 为空
+PY_SRC="$(readlink -f "$ROOT/deps/python" 2>/dev/null || true)"
+if [ -z "$PY_SRC" ] || [ ! -d "$PY_SRC" ]; then
+  PY_SRC="$ROOT/deps/python"
+fi
+if [ ! -x "$PY_SRC/bin/python3.9" ]; then
+  echo "[ERROR] Python 运行时无效: $PY_SRC/bin/python3.9"
+  exit 1
+fi
+mkdir -p "$STAGE/runtime/python"
+cp -aL "$PY_SRC/." "$STAGE/runtime/python/"
+if [ -L "$STAGE/runtime/python" ] || [ ! -x "$STAGE/runtime/python/bin/python3.9" ]; then
+  echo "[ERROR] STAGE runtime/python 未物化（勿将符号链接打入客户包）"
+  exit 1
+fi
 cp -a "$ROOT/offline-bundle/python/wheels" "$STAGE/runtime/wheels"
 find "$STAGE/backend/node_modules/.bin" -type f -exec chmod a+x {} +
 find "$STAGE" -type d -name '__pycache__' -exec rm -rf {} + 2>/dev/null || true
@@ -259,6 +322,15 @@ if [ -d "$STAGE/backend/sql" ] || find "$STAGE" -name 'migration_*.sql' | grep -
 fi
 if [ ! -f "$STAGE/sql/init.sql" ]; then
   echo "[ERROR] 缺少 STAGE/sql/init.sql"
+  exit 1
+fi
+if [ ! -x "$STAGE/backend/tools/orasqlx/orasqlx" ]; then
+  echo "[ERROR] 客户包缺少 orasqlx 执行文件 backend/tools/orasqlx/orasqlx"
+  exit 1
+fi
+if find "$STAGE/backend/tools/orasqlx" \( -name '*.go' -o -name 'go.mod' -o -name 'go.sum' -o -name '*.sql' -o -name '*.md' \) | grep -q .; then
+  echo "[ERROR] 客户包不应包含 orasqlx 源码（只保留执行文件 backend/tools/orasqlx/orasqlx）"
+  find "$STAGE/backend/tools/orasqlx" \( -name '*.go' -o -name 'go.mod' -o -name 'go.sum' -o -name '*.sql' -o -name '*.md' \)
   exit 1
 fi
 
@@ -281,4 +353,4 @@ echo
 echo "[OK] 客户包: $ARCHIVE"
 echo "     版本:   $VERSION"
 echo "     目录:   $STAGE"
-echo "客户: 解压 -> 编辑 config/backend.env -> sqlplus @sql/init.sql（仅此一个建库脚本）-> ./bin/install.sh -> ./bin/start.sh"
+echo "客户: 解压 -> 编辑 config/backend.env -> sqlplus @sql/init.sql（仅此一个建库脚本）-> ./bin/start.sh（首次自动 install）"

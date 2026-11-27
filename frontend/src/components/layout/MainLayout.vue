@@ -48,6 +48,9 @@
         <el-menu-item v-if="auth.showMenu('/automation')" index="/automation">
           <el-icon><SetUp /></el-icon><template #title>自动化运维</template>
         </el-menu-item>
+        <el-menu-item v-if="auth.showMenu('/db-inspect')" index="/db-inspect">
+          <el-icon><DocumentChecked /></el-icon><template #title>数据库巡检</template>
+        </el-menu-item>
         <el-menu-item v-if="auth.showMenu('/service-catalog')" index="/service-catalog">
           <el-icon><Tickets /></el-icon><template #title>服务工单</template>
         </el-menu-item>
@@ -179,7 +182,7 @@ const pwdRef = ref()
 const titleMap = {
   '/dashboard': '控制台', '/monitor': '监控中心', '/monitor/custom-metrics': '自定义监控项',
   '/alerts': '告警中心',
-  '/cmdb': '资产管理', '/cmdb/hosts': '主机管理', '/cmdb/clusters': '集群拓扑', '/cmdb/app-relation': '应用依赖关系', '/cmdb/tags': '标签管理', '/automation': '自动化运维', '/service-catalog': '服务工单', '/sql': 'SQL优化', '/reports': '报表中心',
+  '/cmdb': '资产管理', '/cmdb/hosts': '主机管理', '/cmdb/clusters': '集群拓扑', '/cmdb/app-relation': '应用依赖关系', '/cmdb/tags': '标签管理', '/automation': '自动化运维', '/db-inspect': '数据库巡检', '/service-catalog': '服务工单', '/sql': 'SQL优化', '/reports': '报表中心',
   '/settings/users': '用户管理', '/settings/roles': '角色权限', '/settings/profile': '个人设置', '/settings/system-config': '系统配置',
   '/settings/system-audit': '操作审计',
   '/ai': 'AI 智能分析',

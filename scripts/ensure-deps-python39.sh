@@ -3,8 +3,11 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=python39-home.sh
+. "$ROOT/scripts/python39-home.sh"
 DEPS="$ROOT/deps"
-PY="$DEPS/python/bin/python3.9"
+PREFIX="${DIOPS_PYTHON_HOME:-/opt/python39}"
+PY="$PREFIX/bin/python3.9"
 
 if [ -x "$PY" ]; then
   echo "[OK] 已存在 $PY ($("$PY" --version 2>&1))"
@@ -43,29 +46,32 @@ TAR="cpython-${PY_VERSION}+${PY_TAG}-${ARCH}-install_only.tar.gz"
 URL="https://github.com/indygreg/python-build-standalone/releases/download/${PY_TAG}/${TAR}"
 DEST="$DEPS/$TAR"
 
-mkdir -p "$DEPS"
-echo "[INFO] 下载 Python ${PY_VERSION} -> deps/python"
+mkdir -p "$DEPS" "$PREFIX"
+echo "[INFO] 下载 Python ${PY_VERSION} -> ${PREFIX}"
 echo "       $URL"
 if ! curl -fsSL --connect-timeout 30 --retry 3 --retry-delay 5 -o "$DEST" "$URL"; then
   echo "[ERROR] 下载失败。可手工下载解压到 deps/python，保证存在 deps/python/bin/python3.9"
   exit 1
 fi
 
-rm -rf "$DEPS/python"
-tar -xzf "$DEST" -C "$DEPS"
+rm -rf "$PREFIX"
+tar -xzf "$DEST" -C "$PREFIX" --strip-components=1 2>/dev/null || {
+  tar -xzf "$DEST" -C "$DEPS"
+  found="$(find "$DEPS" -maxdepth 2 -type d -name 'python' | head -1)"
+  if [ -n "$found" ]; then
+  rm -rf "$PREFIX"
+  cp -a "$found/." "$PREFIX/"
+  rm -rf "$found"
+  fi
+}
 rm -f "$DEST"
 
-if [ ! -d "$DEPS/python" ]; then
-  found="$(find "$DEPS" -maxdepth 2 -type d -name 'python' | head -1)"
-  if [ -n "$found" ] && [ "$found" != "$DEPS/python" ]; then
-    mv "$found" "$DEPS/python"
-  fi
-fi
+ln -sfn "$PREFIX" "$DEPS/python"
 
 if [ ! -x "$PY" ]; then
   echo "[ERROR] 解压后未找到 $PY"
   exit 1
 fi
 
-chmod +x "$DEPS/python/bin/"* 2>/dev/null || true
+chmod +x "$PREFIX/bin/"* 2>/dev/null || true
 echo "[OK] $PY ($("$PY" --version 2>&1))"

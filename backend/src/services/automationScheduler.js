@@ -26,7 +26,8 @@ function isDisabled() {
 }
 
 function getTimezone() {
-  return process.env.AUTOMATION_SCHEDULER_TIMEZONE || undefined;
+  const { platformTz } = require('../utils/platformClock');
+  return platformTz();
 }
 
 function clearPrefix(prefix) {

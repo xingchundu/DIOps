@@ -2,6 +2,7 @@
 
 > **v4.0（Java 化）：** 核心监控链路已迁移到 Java（`dbops-server/`，Spring Boot 3 + JDK 17），其余接口由 Java 网关转发给 Node。
 > 启动方式见 [docs/JAVA_MIGRATION.md](./docs/JAVA_MIGRATION.md)（`./start-java.sh start`），本次代码审查与缺陷修复清单见 [BUGFIX_REPORT.md](./BUGFIX_REPORT.md)。
+> **新增「数据库巡检」**（Oracle / 达梦 / MySQL / PostgreSQL，含按库类型分节、带 SQL ID 的 SQL 洞察报告）：执行 `backend/sql/migration_db_inspect.sql`（新库已并入 `init-merge.list`），说明见 [docs/DB_INSPECT_DESIGN.md](./docs/DB_INSPECT_DESIGN.md)。
 
 > **v4.4（2026-11-12）：** 按代码审查报告修复（回滚真执行、发布幂等、凭据 AES-GCM 加密、Python 服务内部令牌、SSH 指纹校验、nginx 长任务等）。
 > 升级须执行 `backend/sql/migration_security_fixes.sql`，并**备份 `backend/.env` 里的 `DBOPS_SECRET_KEY`**（被管库密码用它加密，丢失需重新录入）。
@@ -19,6 +20,7 @@
 > 说明见 [docs/SQL_INSIGHT_DESIGN.md 第 8 节](./docs/SQL_INSIGHT_DESIGN.md)。
 
 > **安装与部署请优先阅读：** [docs/INSTALL.md](./docs/INSTALL.md)（含「开发安装」与「生产部署」两章）。  
+> **存量环境版本升级**（备份 `DBOPS_SECRET_KEY`、增量 SQL、授权、CMDB 凭据）：见 [docs/INSTALL.md 第 6.5 节](./docs/INSTALL.md)；离线客户包见 `scripts/offline-package/安装说明.md` **第 7.5 节**。  
 > 下文主要为版本更新记录；文末仍保留部分历史部署摘录与 SQL 优化 Agent 说明。
 
 ---

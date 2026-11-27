@@ -210,6 +210,7 @@ public class EngineMetricsCollector {
         }
         // 能执行到这里说明实例可连可查
         Metrics.push(out, "panwei_instance_up", 1, "");
+        panweiHostCpu(t, out);
         Map<String, Object> lag = t.oneQuietly("SELECT COALESCE(MAX(pg_wal_lsn_diff(sent_lsn, replay_lsn)), 0) AS lag FROM pg_stat_replication");
         if (lag == null) {
             lag = t.oneQuietly("SELECT COALESCE(MAX(pg_xlog_location_diff(sender_sent_location, receiver_replay_location)), 0) AS lag FROM pg_stat_replication");
@@ -219,6 +220,72 @@ public class EngineMetricsCollector {
         if (r4 != null) {
             Metrics.push(out, "panwei_database_total_gb", r4.get("GB"), "GB");
         }
+    }
+
+    /**
+     * 磐维主机 CPU 来自库内 dbe_perf.os_runtime 的 1 秒差值。
+     * SSH 登录的是关联主机，当前环境往往不是数据库所在机器。视图不存在时不产出指标。
+     */
+    private void panweiHostCpu(TargetDb t, List<Map<String, Object>> out) {
+        double[] a = panweiOsTimes(t);
+        if (a == null) {
+            return;
+        }
+        try {
+            Thread.sleep(1000);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return;
+        }
+        double[] b = panweiOsTimes(t);
+        if (b == null) {
+            return;
+        }
+        double busy = b[0] - a[0];
+        double idle = b[1] - a[1];
+        double total = busy + idle;
+        if (total <= 0) {
+            return;
+        }
+        Metrics.push(out, "panwei_host_cpu_pct", Math.min(100, busy / total * 100), "%");
+    }
+
+    /** @return [busy, idle]，缺任一项返回 null */
+    private static double[] panweiOsTimes(TargetDb t) {
+        String sql = "SELECT name, value FROM dbe_perf.os_runtime WHERE upper(name) IN "
+                + "('BUSY_TIME','IDLE_TIME','USER_TIME','SYS_TIME','NICE_TIME','IOWAIT_TIME')";
+        List<Map<String, Object>> rows = t.queryQuietly(sql);
+        if (rows == null || rows.isEmpty()) {
+            rows = t.queryQuietly(sql.replace("dbe_perf.os_runtime", "pv_os_run_info()"));
+        }
+        if (rows == null || rows.isEmpty()) {
+            return null;
+        }
+        java.util.Map<String, Double> v = new java.util.HashMap<>();
+        for (Map<String, Object> row : rows) {
+            String name = Values.str(row.get("NAME"));
+            Double value = Values.toDouble(row.get("VALUE"));
+            if (name != null && value != null) {
+                v.put(name.toUpperCase(java.util.Locale.ROOT), value);
+            }
+        }
+        Double idle = v.get("IDLE_TIME");
+        Double busy = v.get("BUSY_TIME");
+        if (busy == null) {
+            double sum = 0;
+            boolean any = false;
+            for (String k : new String[]{"USER_TIME", "SYS_TIME", "NICE_TIME", "IOWAIT_TIME"}) {
+                Double x = v.get(k);
+                if (x != null) {
+                    sum += x;
+                    any = true;
+                }
+            }
+            if (any) {
+                busy = sum;
+            }
+        }
+        return busy == null || idle == null ? null : new double[]{busy, idle};
     }
 
     private Map<String, Object> panweiPhase2(TargetDb t, List<Map<String, Object>> metrics) {
